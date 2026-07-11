@@ -7,33 +7,52 @@ app = Flask(__name__)
 devices = []
 
 def parse_user_agent(ua):
-    ua_lower = ua.lower()
-    
+    try:
+        info = json.loads(ua)
+        ua_str = info.get('ua', '')
+        screen = info.get('screen', '')
+        memory = info.get('memory', '')
+        cores = info.get('cores', '')
+    except:
+        ua_str = ua
+        screen = ''
+        memory = ''
+        cores = ''
+
+    ua_lower = ua_str.lower()
+
     if 'iphone' in ua_lower:
         match = re.search(r'os (\d+)_', ua_lower)
         version = match.group(1) if match else ''
-        return f"iPhone (iOS {version})", "iOS"
-    
+        return f"iPhone (iOS {version}) {screen}".strip(), "iOS"
+
     elif 'ipad' in ua_lower:
         match = re.search(r'os (\d+)_', ua_lower)
         version = match.group(1) if match else ''
-        return f"iPad (iOS {version})", "iOS"
-    
+        return f"iPad (iOS {version}) {screen}".strip(), "iOS"
+
     elif 'android' in ua_lower:
         version_match = re.search(r'android (\d+)', ua_lower)
         version = version_match.group(1) if version_match else ''
-        for brand in ['samsung', 'xiaomi', 'redmi', 'huawei', 'oppo', 'vivo', 
-                      'realme', 'oneplus', 'nokia', 'motorola', 'lg', 'sony']:
-            if brand in ua_lower:
-                return f"{brand.capitalize()} (Android {version})", "Android"
-        return f"Android {version}", "Android"
-    
+        brand = 'Android'
+        for b in ['samsung', 'xiaomi', 'redmi', 'huawei', 'oppo', 'vivo',
+                  'realme', 'oneplus', 'nokia', 'motorola', 'lg', 'sony']:
+            if b in ua_lower:
+                brand = b.capitalize()
+                break
+        extras = []
+        if screen: extras.append(screen)
+        if memory and memory != 'Unknown': extras.append(f"{memory}GB RAM")
+        if cores and cores != 'Unknown': extras.append(f"{cores} cores")
+        extra_str = ' | '.join(extras)
+        return f"{brand} (Android {version}) {extra_str}".strip(), "Android"
+
     elif 'windows' in ua_lower:
         return "Windows PC", "Windows"
-    
+
     elif 'macintosh' in ua_lower:
         return "Mac", "Mac"
-    
+
     return "Unknown Device", "Other"
 
 DASHBOARD_HTML = """
@@ -107,7 +126,7 @@ DASHBOARD_HTML = """
             <td>{{ loop.index }}</td>
             <td>{{ d.hostname }}</td>
             <td>
-                {% if d.mac == 'N/A' or d.mac == 'Mobile - IP Only' %}
+                {% if d.mac == 'N/A' or 'Mobile' in d.mac %}
                     <span class="na">Not available on {{ d.type }}</span>
                 {% else %}
                     <b>{{ d.mac }}</b>
@@ -123,7 +142,7 @@ DASHBOARD_HTML = """
     <div class="qr-section">
         <h2>📱 Scan to Register Mobile Device</h2>
         <p>Android & iPhone users scan this QR code to register automatically</p>
-        <img src="https://api.qrserver.com/v1/create-qr-code/?size=220x220&data={{ scan_url }}" 
+        <img src="https://api.qrserver.com/v1/create-qr-code/?size=220x220&data={{ scan_url }}"
              width="220" height="220" alt="QR Code"/>
         <a class="scan-link" href="/scan">{{ scan_url }}</a>
     </div>
@@ -168,27 +187,40 @@ SCAN_HTML = """
             if (/android/i.test(ua)) deviceType = 'Android';
             else if (/iphone|ipad/i.test(ua)) deviceType = 'iOS';
 
-            document.getElementById('device-ua').textContent = ua.substring(0, 60) + '...';
+            var deviceInfo = {
+                ua: ua,
+                platform: navigator.platform || 'Unknown',
+                language: navigator.language || 'Unknown',
+                screen: screen.width + 'x' + screen.height,
+                cores: navigator.hardwareConcurrency || 'Unknown',
+                memory: navigator.deviceMemory || 'Unknown'
+            };
+
             document.getElementById('device-type').textContent = deviceType;
+            document.getElementById('device-ua').textContent = ua.substring(0, 80) + '...';
+            document.getElementById('device-screen').textContent = deviceInfo.screen;
+            document.getElementById('device-memory').textContent = 
+                deviceInfo.memory !== 'Unknown' ? deviceInfo.memory + ' GB' : 'Unknown';
+            document.getElementById('device-cores').textContent = deviceInfo.cores;
 
             fetch('/register-device', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    hostname: ua,
+                    hostname: JSON.stringify(deviceInfo),
                     mac_address: 'N/A',
                     type: deviceType
                 })
             })
             .then(r => r.json())
             .then(function() {
-                document.getElementById('status').innerHTML = 
+                document.getElementById('status').innerHTML =
                     '<span class="success">✓ Registered Successfully!</span>';
-                document.getElementById('info').textContent = 
+                document.getElementById('info').textContent =
                     'Your device is now showing on the dashboard.';
             })
             .catch(function() {
-                document.getElementById('status').innerHTML = 
+                document.getElementById('status').innerHTML =
                     '<span class="error">✗ Failed. Check your connection.</span>';
             });
         }
@@ -201,6 +233,9 @@ SCAN_HTML = """
         <div class="status" id="status">Registering your device...</div>
         <div class="detail">
             <p>Type: <span id="device-type">Detecting...</span></p>
+            <p>Screen: <span id="device-screen">Detecting...</span></p>
+            <p>RAM: <span id="device-memory">Detecting...</span></p>
+            <p>CPU Cores: <span id="device-cores">Detecting...</span></p>
             <p>Agent: <span id="device-ua">Detecting...</span></p>
         </div>
         <p class="info" id="info">Please wait while we register your device...</p>
@@ -256,7 +291,8 @@ def dashboard():
     android_count = sum(1 for d in devices if d['type'] == 'Android')
     ios_count = sum(1 for d in devices if d['type'] == 'iOS')
     return render_template_string(DASHBOARD_HTML,
-        devices=devices, count=len(devices),
+        devices=devices,
+        count=len(devices),
         windows_count=windows_count,
         android_count=android_count,
         ios_count=ios_count,
