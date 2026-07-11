@@ -1,45 +1,103 @@
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, Response
 from datetime import datetime
-import qrcode
-import io
-import base64
+import re
+import json
 
 app = Flask(__name__)
 devices = []
+
+def parse_user_agent(ua):
+    ua_lower = ua.lower()
+    
+    if 'iphone' in ua_lower:
+        match = re.search(r'os (\d+)_', ua_lower)
+        version = match.group(1) if match else ''
+        return f"iPhone (iOS {version})", "iOS"
+    
+    elif 'ipad' in ua_lower:
+        match = re.search(r'os (\d+)_', ua_lower)
+        version = match.group(1) if match else ''
+        return f"iPad (iOS {version})", "iOS"
+    
+    elif 'android' in ua_lower:
+        version_match = re.search(r'android (\d+)', ua_lower)
+        version = version_match.group(1) if version_match else ''
+        for brand in ['samsung', 'xiaomi', 'redmi', 'huawei', 'oppo', 'vivo', 
+                      'realme', 'oneplus', 'nokia', 'motorola', 'lg', 'sony']:
+            if brand in ua_lower:
+                return f"{brand.capitalize()} (Android {version})", "Android"
+        return f"Android {version}", "Android"
+    
+    elif 'windows' in ua_lower:
+        return "Windows PC", "Windows"
+    
+    elif 'macintosh' in ua_lower:
+        return "Mac", "Mac"
+    
+    return "Unknown Device", "Other"
 
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Device MAC Monitor</title>
+    <title>MAC Registration</title>
     <meta http-equiv="refresh" content="10">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: Arial, sans-serif; background: #1a1a2e; color: #eee; padding: 20px; }
-        h1 { color: #00d4ff; }
-        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-        th { background: #00d4ff; color: #000; padding: 10px; text-align: left; }
-        td { padding: 10px; border-bottom: 1px solid #333; }
+        h1 { color: #00d4ff; margin-bottom: 5px; }
+        .subtitle { color: #888; font-size: 14px; margin-bottom: 20px; }
+        .stats { display: flex; gap: 15px; margin-bottom: 25px; flex-wrap: wrap; }
+        .stat-card { background: #16213e; border-radius: 10px; padding: 15px 25px; text-align: center; min-width: 120px; }
+        .stat-card .number { font-size: 28px; font-weight: bold; color: #00d4ff; }
+        .stat-card .label { font-size: 12px; color: #888; margin-top: 4px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th { background: #00d4ff; color: #000; padding: 12px 10px; text-align: left; font-size: 13px; }
+        td { padding: 10px; border-bottom: 1px solid #222; font-size: 13px; }
         tr:hover { background: #16213e; }
-        .count { color: #00d4ff; font-size: 18px; }
-        .qr-section { margin-top: 30px; padding: 20px; background: #16213e; border-radius: 10px; text-align: center; }
-        .qr-section img { margin-top: 10px; border: 4px solid #00d4ff; border-radius: 8px; }
-        .qr-section p { color: #aaa; font-size: 14px; }
-        .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; }
+        .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: bold; }
         .windows { background: #0078d4; color: #fff; }
         .android { background: #3ddc84; color: #000; }
-        .other { background: #888; color: #fff; }
+        .ios { background: #555; color: #fff; }
+        .mac { background: #aaa; color: #000; }
+        .other { background: #444; color: #fff; }
+        .qr-section { margin-top: 35px; padding: 25px; background: #16213e; border-radius: 12px; text-align: center; }
+        .qr-section h2 { color: #00d4ff; margin-bottom: 8px; }
+        .qr-section p { color: #aaa; font-size: 14px; margin-bottom: 15px; }
+        .qr-section img { border: 4px solid #00d4ff; border-radius: 10px; }
+        .scan-link { color: #00d4ff; word-break: break-all; font-size: 14px; margin-top: 10px; display: block; }
+        .na { color: #666; font-style: italic; }
     </style>
 </head>
 <body>
-    <h1>Device MAC Address Monitor</h1>
-    <p class="count">Total Devices: <b>{{ count }}</b></p>
-    <p style="color:#888;">Auto-refreshes every 10 seconds</p>
+    <h1>📡 MAC Registration</h1>
+    <p class="subtitle">Auto-refreshes every 10 seconds</p>
+
+    <div class="stats">
+        <div class="stat-card">
+            <div class="number">{{ count }}</div>
+            <div class="label">Total Devices</div>
+        </div>
+        <div class="stat-card">
+            <div class="number">{{ windows_count }}</div>
+            <div class="label">Windows</div>
+        </div>
+        <div class="stat-card">
+            <div class="number">{{ android_count }}</div>
+            <div class="label">Android</div>
+        </div>
+        <div class="stat-card">
+            <div class="number">{{ ios_count }}</div>
+            <div class="label">iOS</div>
+        </div>
+    </div>
 
     <table>
         <tr>
             <th>#</th>
             <th>Device Name</th>
-            <th>WiFi MAC / Device Info</th>
+            <th>WiFi MAC Address</th>
             <th>IP Address</th>
             <th>Type</th>
             <th>Time</th>
@@ -48,7 +106,13 @@ DASHBOARD_HTML = """
         <tr>
             <td>{{ loop.index }}</td>
             <td>{{ d.hostname }}</td>
-            <td><b>{{ d.mac }}</b></td>
+            <td>
+                {% if d.mac == 'N/A' or d.mac == 'Mobile - IP Only' %}
+                    <span class="na">Not available on {{ d.type }}</span>
+                {% else %}
+                    <b>{{ d.mac }}</b>
+                {% endif %}
+            </td>
             <td>{{ d.ip }}</td>
             <td><span class="badge {{ d.type|lower }}">{{ d.type }}</span></td>
             <td>{{ d.timestamp }}</td>
@@ -57,11 +121,11 @@ DASHBOARD_HTML = """
     </table>
 
     <div class="qr-section">
-        <h2 style="color:#00d4ff;">Scan with Android / iPhone</h2>
-        <p>Share this QR code — anyone who scans it will be registered automatically</p>
-        <img src="/qr" width="200" height="200" alt="QR Code"/>
-        <p style="margin-top:10px;">Or share this link:<br>
-        <a href="/scan" style="color:#00d4ff;">{{ scan_url }}</a></p>
+        <h2>📱 Scan to Register Mobile Device</h2>
+        <p>Android & iPhone users scan this QR code to register automatically</p>
+        <img src="https://api.qrserver.com/v1/create-qr-code/?size=220x220&data={{ scan_url }}" 
+             width="220" height="220" alt="QR Code"/>
+        <a class="scan-link" href="/scan">{{ scan_url }}</a>
     </div>
 </body>
 </html>
@@ -71,66 +135,114 @@ SCAN_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Device Registration</title>
+    <title>MAC Registration</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="manifest" href="/manifest.json">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="MAC Registration">
+    <meta name="theme-color" content="#1a1a2e">
     <style>
-        body { font-family: Arial, sans-serif; background: #1a1a2e; color: #eee; 
-               display: flex; flex-direction: column; align-items: center; 
-               justify-content: center; min-height: 100vh; margin: 0; padding: 20px; }
-        h1 { color: #00d4ff; text-align: center; }
-        .card { background: #16213e; border-radius: 15px; padding: 30px; 
-                max-width: 400px; width: 100%; text-align: center; }
-        .status { font-size: 18px; margin: 20px 0; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: Arial, sans-serif; background: #1a1a2e; color: #eee;
+               display: flex; align-items: center; justify-content: center;
+               min-height: 100vh; padding: 20px; }
+        .card { background: #16213e; border-radius: 20px; padding: 35px 30px;
+                max-width: 380px; width: 100%; text-align: center; }
+        h1 { color: #00d4ff; font-size: 22px; margin-bottom: 8px; }
+        .icon { font-size: 60px; margin: 15px 0; }
+        .status { font-size: 16px; margin: 20px 0 10px; min-height: 24px; }
         .success { color: #3ddc84; }
-        .info { color: #aaa; font-size: 14px; margin-top: 10px; }
-        .mac { font-size: 22px; font-weight: bold; color: #00d4ff; 
-               background: #0d1117; padding: 10px 20px; border-radius: 8px; 
-               margin: 15px 0; letter-spacing: 2px; }
+        .error { color: #ff6b6b; }
+        .info { color: #aaa; font-size: 13px; line-height: 1.6; }
+        .detail { background: #0d1117; border-radius: 10px; padding: 12px 15px;
+                  margin: 15px 0; font-size: 13px; text-align: left; }
+        .detail p { margin: 4px 0; color: #aaa; }
+        .detail span { color: #00d4ff; }
+        .install-hint { margin-top: 20px; padding: 12px; background: #0d1117;
+                        border-radius: 10px; font-size: 12px; color: #666; }
     </style>
     <script>
         window.onload = function() {
-            var info = {
-                hostname: navigator.userAgent.substring(0, 50),
-                mac_address: "Android/Browser - IP Only",
-                type: "Android"
-            };
+            var ua = navigator.userAgent;
+            var deviceType = 'Mobile';
+            if (/android/i.test(ua)) deviceType = 'Android';
+            else if (/iphone|ipad/i.test(ua)) deviceType = 'iOS';
+
+            document.getElementById('device-ua').textContent = ua.substring(0, 60) + '...';
+            document.getElementById('device-type').textContent = deviceType;
+
             fetch('/register-device', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(info)
+                body: JSON.stringify({
+                    hostname: ua,
+                    mac_address: 'N/A',
+                    type: deviceType
+                })
             })
             .then(r => r.json())
-            .then(data => {
+            .then(function() {
                 document.getElementById('status').innerHTML = 
                     '<span class="success">✓ Registered Successfully!</span>';
-                document.getElementById('info').innerHTML = 
-                    'Your device has been registered on the dashboard.';
+                document.getElementById('info').textContent = 
+                    'Your device is now showing on the dashboard.';
             })
-            .catch(e => {
-                document.getElementById('status').innerHTML = 'Registration failed. Try again.';
+            .catch(function() {
+                document.getElementById('status').innerHTML = 
+                    '<span class="error">✗ Failed. Check your connection.</span>';
             });
         }
     </script>
 </head>
 <body>
     <div class="card">
-        <h1>Device Registration</h1>
-        <div class="mac">📱 Mobile Device</div>
+        <h1>📡 MAC Registration</h1>
+        <div class="icon">📱</div>
         <div class="status" id="status">Registering your device...</div>
-        <div class="info" id="info">Please wait...</div>
-        <p class="info">Your device info will appear on the monitoring dashboard.</p>
+        <div class="detail">
+            <p>Type: <span id="device-type">Detecting...</span></p>
+            <p>Agent: <span id="device-ua">Detecting...</span></p>
+        </div>
+        <p class="info" id="info">Please wait while we register your device...</p>
+        <div class="install-hint">
+            💡 iPhone users: tap Share → "Add to Home Screen" to install this app
+        </div>
     </div>
 </body>
 </html>
 """
 
+MANIFEST = {
+    "name": "MAC Registration",
+    "short_name": "MAC Reg",
+    "start_url": "/scan",
+    "display": "standalone",
+    "background_color": "#1a1a2e",
+    "theme_color": "#00d4ff",
+    "icons": [
+        {
+            "src": "https://api.qrserver.com/v1/create-qr-code/?size=192x192&data=MAC",
+            "sizes": "192x192",
+            "type": "image/png"
+        }
+    ]
+}
+
 @app.route('/register-device', methods=['POST'])
 def register_device():
     data = request.json
-    device_type = data.get('type', 'Windows')
+    ua = data.get('hostname', '')
+    mac = data.get('mac_address', 'N/A')
+    device_type = data.get('type', 'Other')
+
+    if device_type in ['Android', 'iOS', 'Mobile']:
+        hostname, device_type = parse_user_agent(ua)
+    else:
+        hostname = data.get('hostname', 'Unknown')
+
     devices.append({
-        "mac": data.get('mac_address'),
-        "hostname": data.get('hostname'),
+        "mac": mac,
+        "hostname": hostname,
         "ip": request.remote_addr,
         "type": device_type,
         "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -139,21 +251,24 @@ def register_device():
 
 @app.route('/')
 def dashboard():
-    scan_url = request.host_url + "scan"
-    return render_template_string(DASHBOARD_HTML, devices=devices, count=len(devices), scan_url=scan_url)
+    scan_url = request.host_url.rstrip('/') + "/scan"
+    windows_count = sum(1 for d in devices if d['type'] == 'Windows')
+    android_count = sum(1 for d in devices if d['type'] == 'Android')
+    ios_count = sum(1 for d in devices if d['type'] == 'iOS')
+    return render_template_string(DASHBOARD_HTML,
+        devices=devices, count=len(devices),
+        windows_count=windows_count,
+        android_count=android_count,
+        ios_count=ios_count,
+        scan_url=scan_url)
 
 @app.route('/scan')
 def scan():
     return render_template_string(SCAN_HTML)
 
-@app.route('/qr')
-def qr_code():
-    scan_url = request.host_url + "scan"
-    img = qrcode.make(scan_url)
-    buf = io.BytesIO()
-    img.save(buf, format='PNG')
-    buf.seek(0)
-    return buf.getvalue(), 200, {'Content-Type': 'image/png'}
+@app.route('/manifest.json')
+def manifest():
+    return Response(json.dumps(MANIFEST), mimetype='application/json')
 
 @app.route('/health')
 def health():
