@@ -25,12 +25,10 @@ def parse_user_agent(ua):
         match = re.search(r'os (\d+)_', ua_lower)
         version = match.group(1) if match else ''
         return f"iPhone (iOS {version}) {screen}".strip(), "iOS"
-
     elif 'ipad' in ua_lower:
         match = re.search(r'os (\d+)_', ua_lower)
         version = match.group(1) if match else ''
         return f"iPad (iOS {version}) {screen}".strip(), "iOS"
-
     elif 'android' in ua_lower:
         version_match = re.search(r'android (\d+)', ua_lower)
         version = version_match.group(1) if version_match else ''
@@ -46,13 +44,10 @@ def parse_user_agent(ua):
         if cores and cores != 'Unknown': extras.append(f"{cores} cores")
         extra_str = ' | '.join(extras)
         return f"{brand} (Android {version}) {extra_str}".strip(), "Android"
-
     elif 'windows' in ua_lower:
         return "Windows PC", "Windows"
-
     elif 'macintosh' in ua_lower:
         return "Mac", "Mac"
-
     return "Unknown Device", "Other"
 
 DASHBOARD_HTML = """
@@ -73,7 +68,7 @@ DASHBOARD_HTML = """
         .stat-card .label { font-size: 12px; color: #888; margin-top: 4px; }
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         th { background: #00d4ff; color: #000; padding: 12px 10px; text-align: left; font-size: 13px; }
-        td { padding: 10px; border-bottom: 1px solid #222; font-size: 13px; }
+        td { padding: 10px; border-bottom: 1px solid #222; font-size: 13px; word-break: break-all; }
         tr:hover { background: #16213e; }
         .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: bold; }
         .windows { background: #0078d4; color: #fff; }
@@ -87,17 +82,22 @@ DASHBOARD_HTML = """
         .qr-section p { color: #aaa; font-size: 14px; margin-bottom: 15px; }
         .qr-section img { border: 4px solid #00d4ff; border-radius: 10px; }
         .scan-link { color: #00d4ff; word-break: break-all; font-size: 14px; margin-top: 10px; display: block; }
-        .na { color: #666; font-style: italic; }
+        .fingerprint { color: #00d4ff; font-family: monospace; font-size: 12px; }
+        .duplicate { background: #ff000022; }
     </style>
 </head>
 <body>
-    <h1>📡 MAC Registration</h1>
+    <h1>📡 Device Registration Dashboard</h1>
     <p class="subtitle">Auto-refreshes every 10 seconds</p>
 
     <div class="stats">
         <div class="stat-card">
             <div class="number">{{ count }}</div>
-            <div class="label">Total Devices</div>
+            <div class="label">Total Registrations</div>
+        </div>
+        <div class="stat-card">
+            <div class="number">{{ unique_count }}</div>
+            <div class="label">Unique Devices</div>
         </div>
         <div class="stat-card">
             <div class="number">{{ windows_count }}</div>
@@ -112,8 +112,8 @@ DASHBOARD_HTML = """
             <div class="label">iOS</div>
         </div>
         <div class="stat-card">
-            <div class="number">{{ network_count }}</div>
-            <div class="label">Network Scan</div>
+            <div class="number">{{ duplicate_count }}</div>
+            <div class="label">Duplicates</div>
         </div>
     </div>
 
@@ -121,24 +121,22 @@ DASHBOARD_HTML = """
         <tr>
             <th>#</th>
             <th>Device Name</th>
-            <th>WiFi MAC Address</th>
+            <th>WiFi MAC</th>
+            <th>Fingerprint</th>
             <th>IP Address</th>
             <th>Type</th>
+            <th>Duplicate</th>
             <th>Time</th>
         </tr>
         {% for d in devices %}
-        <tr>
+        <tr class="{{ 'duplicate' if d.is_duplicate else '' }}">
             <td>{{ loop.index }}</td>
             <td>{{ d.hostname }}</td>
-            <td>
-                {% if d.mac == 'N/A' or 'Mobile' in d.mac %}
-                    <span class="na">Not available on {{ d.type }}</span>
-                {% else %}
-                    <b>{{ d.mac }}</b>
-                {% endif %}
-            </td>
+            <td>{{ d.mac }}</td>
+            <td><span class="fingerprint">{{ d.fingerprint }}</span></td>
             <td>{{ d.ip }}</td>
             <td><span class="badge {{ d.type|lower }}">{{ d.type }}</span></td>
+            <td>{{ '⚠️ YES' if d.is_duplicate else '✅ No' }}</td>
             <td>{{ d.timestamp }}</td>
         </tr>
         {% endfor %}
@@ -159,11 +157,11 @@ SCAN_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>MAC Registration</title>
+    <title>Device Registration</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="manifest" href="/manifest.json">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-title" content="MAC Registration">
+    <meta name="apple-mobile-web-app-title" content="Device Registration">
     <meta name="theme-color" content="#1a1a2e">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -177,15 +175,28 @@ SCAN_HTML = """
         .status { font-size: 16px; margin: 20px 0 10px; min-height: 24px; }
         .success { color: #3ddc84; }
         .error { color: #ff6b6b; }
+        .warning { color: #ff9800; }
         .info { color: #aaa; font-size: 13px; line-height: 1.6; }
         .detail { background: #0d1117; border-radius: 10px; padding: 12px 15px;
                   margin: 15px 0; font-size: 13px; text-align: left; }
         .detail p { margin: 4px 0; color: #aaa; }
-        .detail span { color: #00d4ff; }
-        .install-hint { margin-top: 20px; padding: 12px; background: #0d1117;
-                        border-radius: 10px; font-size: 12px; color: #666; }
+        .detail span { color: #00d4ff; font-family: monospace; }
+        .fingerprint { font-size: 11px; word-break: break-all; }
     </style>
     <script>
+        function generateFingerprint(info) {
+            var str = info.screen + info.cores + info.memory + 
+                      info.platform + info.timezone + info.language +
+                      navigator.userAgent;
+            var hash = 0;
+            for (var i = 0; i < str.length; i++) {
+                var char = str.charCodeAt(i);
+                hash = ((hash << 5) - hash) + char;
+                hash = hash & hash;
+            }
+            return Math.abs(hash).toString(16).toUpperCase().padStart(8, '0');
+        }
+
         window.onload = function() {
             var ua = navigator.userAgent;
             var deviceType = 'Mobile';
@@ -197,16 +208,21 @@ SCAN_HTML = """
                 platform: navigator.platform || 'Unknown',
                 language: navigator.language || 'Unknown',
                 screen: screen.width + 'x' + screen.height,
-                cores: navigator.hardwareConcurrency || 'Unknown',
-                memory: navigator.deviceMemory || 'Unknown'
+                cores: String(navigator.hardwareConcurrency || 'Unknown'),
+                memory: String(navigator.deviceMemory || 'Unknown'),
+                timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Unknown',
+                colorDepth: String(screen.colorDepth || 'Unknown'),
+                pixelRatio: String(window.devicePixelRatio || 'Unknown')
             };
 
+            var fingerprint = generateFingerprint(deviceInfo);
+
             document.getElementById('device-type').textContent = deviceType;
-            document.getElementById('device-ua').textContent = ua.substring(0, 80) + '...';
             document.getElementById('device-screen').textContent = deviceInfo.screen;
             document.getElementById('device-memory').textContent =
                 deviceInfo.memory !== 'Unknown' ? deviceInfo.memory + ' GB' : 'Unknown';
             document.getElementById('device-cores').textContent = deviceInfo.cores;
+            document.getElementById('device-fingerprint').textContent = fingerprint;
 
             fetch('/register-device', {
                 method: 'POST',
@@ -214,15 +230,23 @@ SCAN_HTML = """
                 body: JSON.stringify({
                     hostname: JSON.stringify(deviceInfo),
                     mac_address: 'N/A',
+                    fingerprint: fingerprint,
                     type: deviceType
                 })
             })
             .then(r => r.json())
-            .then(function() {
-                document.getElementById('status').innerHTML =
-                    '<span class="success">✓ Registered Successfully!</span>';
-                document.getElementById('info').textContent =
-                    'Your device is now showing on the dashboard.';
+            .then(function(data) {
+                if (data.is_duplicate) {
+                    document.getElementById('status').innerHTML =
+                        '<span class="warning">⚠️ Device already registered!</span>';
+                    document.getElementById('info').textContent =
+                        'This device has been registered before.';
+                } else {
+                    document.getElementById('status').innerHTML =
+                        '<span class="success">✓ Registered Successfully!</span>';
+                    document.getElementById('info').textContent =
+                        'Your device is now registered on the dashboard.';
+                }
             })
             .catch(function() {
                 document.getElementById('status').innerHTML =
@@ -233,7 +257,7 @@ SCAN_HTML = """
 </head>
 <body>
     <div class="card">
-        <h1>📡 MAC Registration</h1>
+        <h1>📡 Device Registration</h1>
         <div class="icon">📱</div>
         <div class="status" id="status">Registering your device...</div>
         <div class="detail">
@@ -241,27 +265,24 @@ SCAN_HTML = """
             <p>Screen: <span id="device-screen">Detecting...</span></p>
             <p>RAM: <span id="device-memory">Detecting...</span></p>
             <p>CPU Cores: <span id="device-cores">Detecting...</span></p>
-            <p>Agent: <span id="device-ua">Detecting...</span></p>
+            <p>Fingerprint: <span id="device-fingerprint" class="fingerprint">Generating...</span></p>
         </div>
         <p class="info" id="info">Please wait while we register your device...</p>
-        <div class="install-hint">
-            💡 iPhone users: tap Share → "Add to Home Screen" to install this app
-        </div>
     </div>
 </body>
 </html>
 """
 
 MANIFEST = {
-    "name": "MAC Registration",
-    "short_name": "MAC Reg",
+    "name": "Device Registration",
+    "short_name": "DevReg",
     "start_url": "/scan",
     "display": "standalone",
     "background_color": "#1a1a2e",
     "theme_color": "#00d4ff",
     "icons": [
         {
-            "src": "https://api.qrserver.com/v1/create-qr-code/?size=192x192&data=MAC",
+            "src": "https://api.qrserver.com/v1/create-qr-code/?size=192x192&data=DEV",
             "sizes": "192x192",
             "type": "image/png"
         }
@@ -273,6 +294,7 @@ def register_device():
     data = request.json
     ua = data.get('hostname', '')
     mac = data.get('mac_address', 'N/A')
+    fingerprint = data.get('fingerprint', 'N/A')
     device_type = data.get('type', 'Other')
 
     if device_type in ['Android', 'iOS', 'Mobile']:
@@ -280,14 +302,24 @@ def register_device():
     else:
         hostname = data.get('hostname', 'Unknown')
 
+    # Check for duplicate fingerprint
+    is_duplicate = any(d['fingerprint'] == fingerprint and fingerprint != 'N/A'
+                      for d in devices)
+
     devices.append({
         "mac": mac,
+        "fingerprint": fingerprint,
         "hostname": hostname,
         "ip": request.remote_addr,
         "type": device_type,
+        "is_duplicate": is_duplicate,
         "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     })
-    return jsonify({"status": "success"}), 200
+
+    return jsonify({
+        "status": "success",
+        "is_duplicate": is_duplicate
+    }), 200
 
 @app.route('/')
 def dashboard():
@@ -296,13 +328,19 @@ def dashboard():
     android_count = sum(1 for d in devices if d['type'] == 'Android')
     ios_count = sum(1 for d in devices if d['type'] == 'iOS')
     network_count = sum(1 for d in devices if d['type'] == 'Network')
+    duplicate_count = sum(1 for d in devices if d['is_duplicate'])
+    fingerprints = set(d['fingerprint'] for d in devices if d['fingerprint'] != 'N/A')
+    unique_count = len(fingerprints)
+
     return render_template_string(DASHBOARD_HTML,
         devices=devices,
         count=len(devices),
+        unique_count=unique_count,
         windows_count=windows_count,
         android_count=android_count,
         ios_count=ios_count,
         network_count=network_count,
+        duplicate_count=duplicate_count,
         scan_url=scan_url)
 
 @app.route('/scan')
