@@ -80,6 +80,7 @@ DASHBOARD_HTML = """
         .android { background: #3ddc84; color: #000; }
         .ios { background: #555; color: #fff; }
         .mac { background: #aaa; color: #000; }
+        .network { background: #ff9800; color: #000; }
         .other { background: #444; color: #fff; }
         .qr-section { margin-top: 35px; padding: 25px; background: #16213e; border-radius: 12px; text-align: center; }
         .qr-section h2 { color: #00d4ff; margin-bottom: 8px; }
@@ -109,6 +110,10 @@ DASHBOARD_HTML = """
         <div class="stat-card">
             <div class="number">{{ ios_count }}</div>
             <div class="label">iOS</div>
+        </div>
+        <div class="stat-card">
+            <div class="number">{{ network_count }}</div>
+            <div class="label">Network Scan</div>
         </div>
     </div>
 
@@ -199,7 +204,7 @@ SCAN_HTML = """
             document.getElementById('device-type').textContent = deviceType;
             document.getElementById('device-ua').textContent = ua.substring(0, 80) + '...';
             document.getElementById('device-screen').textContent = deviceInfo.screen;
-            document.getElementById('device-memory').textContent = 
+            document.getElementById('device-memory').textContent =
                 deviceInfo.memory !== 'Unknown' ? deviceInfo.memory + ' GB' : 'Unknown';
             document.getElementById('device-cores').textContent = deviceInfo.cores;
 
@@ -290,12 +295,14 @@ def dashboard():
     windows_count = sum(1 for d in devices if d['type'] == 'Windows')
     android_count = sum(1 for d in devices if d['type'] == 'Android')
     ios_count = sum(1 for d in devices if d['type'] == 'iOS')
+    network_count = sum(1 for d in devices if d['type'] == 'Network')
     return render_template_string(DASHBOARD_HTML,
         devices=devices,
         count=len(devices),
         windows_count=windows_count,
         android_count=android_count,
         ios_count=ios_count,
+        network_count=network_count,
         scan_url=scan_url)
 
 @app.route('/scan')
