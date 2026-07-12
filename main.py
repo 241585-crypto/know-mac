@@ -46,12 +46,7 @@ DASHBOARD_HTML = """
         .status-connected    { color: #00ff88; font-weight: bold; }
         .status-disconnected { color: #ff6b6b; }
         .status-unknown      { color: #888; }
-        .source-hta     { background: #00ff8822; color: #00ff88; border: 1px solid #00ff8855;
-                          display: inline-block; padding: 2px 7px; border-radius: 8px; font-size: 10px; font-weight: bold; }
-        .source-browser { background: #ff990022; color: #ff9900; border: 1px solid #ff990055;
-                          display: inline-block; padding: 2px 7px; border-radius: 8px; font-size: 10px; font-weight: bold; }
-        .source-exe     { background: #00d4ff22; color: #00d4ff; border: 1px solid #00d4ff55;
-                          display: inline-block; padding: 2px 7px; border-radius: 8px; font-size: 10px; font-weight: bold; }
+
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
                  background: rgba(0,0,0,0.8); z-index: 1000; justify-content: center; align-items: center; }
         .modal.active { display: flex; }
@@ -102,7 +97,6 @@ DASHBOARD_HTML = """
     <table>
         <tr>
             <th>#</th>
-            <th>Source</th>
             <th>Hostname</th>
             <th>WiFi MAC</th>
             <th>LAN MAC</th>
@@ -122,15 +116,6 @@ DASHBOARD_HTML = """
         {% for d in devices %}
         <tr class="{{ 'duplicate' if d.is_duplicate else '' }}">
             <td>{{ loop.index }}</td>
-            <td>
-                {% if d.type == 'Windows' and not d.mac.startswith('Browser-') %}
-                    <span class="source-hta">HTA</span>
-                {% elif d.mac.startswith('Browser-') %}
-                    <span class="source-browser">Browser</span>
-                {% else %}
-                    <span class="source-exe">EXE</span>
-                {% endif %}
-            </td>
             <td>{{ d.hostname }}</td>
             <td>{{ d.hardware.wifi_mac if d.hardware else 'N/A' }}</td>
             <td>{{ d.hardware.lan_mac if d.hardware else 'N/A' }}</td>
@@ -190,7 +175,6 @@ DASHBOARD_HTML = """
             // System
             html += '<tr><td colspan="2" class="section-header">&#128421; SYSTEM</td></tr>';
             html += '<tr><td>Hostname</td><td>'      + val(d.hostname)             + '</td></tr>';
-            html += '<tr><td>Source</td><td>'        + val(d.type)                 + '</td></tr>';
             html += '<tr><td>OS</td><td>'            + val(hw.os)                  + '</td></tr>';
             html += '<tr><td>Manufacturer</td><td>'  + val(hw.system_manufacturer) + '</td></tr>';
             html += '<tr><td>Model</td><td>'         + val(hw.system_model)        + '</td></tr>';
