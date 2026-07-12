@@ -1,16 +1,23 @@
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, Response
 from datetime import datetime
 import json
 
 app = Flask(__name__)
 devices = []
 
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+    response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    return response
+
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
     <title>Device Registration Dashboard</title>
-
+    <meta http-equiv="refresh" content="10">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -36,9 +43,6 @@ DASHBOARD_HTML = """
         .badge-vpn      { background: #ff990022; color: #ff9900; border: 1px solid #ff990055; }
         .badge-virtual  { background: #aa44ff22; color: #bb66ff; border: 1px solid #aa44ff55; }
         .badge-other    { background: #88888822; color: #aaa;    border: 1px solid #88888855; }
-        .status-connected    { color: #00ff88; font-weight: bold; }
-        .status-disconnected { color: #ff6b6b; }
-        .status-unknown      { color: #888; }
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
                  background: rgba(0,0,0,0.8); z-index: 1000; justify-content: center; align-items: center; }
         .modal.active { display: flex; }
@@ -129,8 +133,6 @@ DASHBOARD_HTML = """
     </div>
 
     <script>
-        // FIX: Use | tojson | safe so Jinja2 does NOT HTML-escape the JSON.
-        // Without | safe, quotes become &quot; and JSON.parse / var assignment breaks.
         var devices = {{ devices_json | safe }};
 
         function val(v) {
@@ -148,19 +150,11 @@ DASHBOARD_HTML = """
             return '<span class="badge ' + cls + '">' + val(type) + '</span>';
         }
 
-        function statusBadge(status) {
-            var cls = 'status-unknown';
-            if (status === 'Connected') cls = 'status-connected';
-            if (status === 'Disconnected' || status === 'Media Disconnected') cls = 'status-disconnected';
-            return '<span class="' + cls + '">' + val(status) + '</span>';
-        }
-
         function showDetail(index) {
             var d  = devices[index];
             var hw = d.hardware || {};
             var html = '<table class="modal-table">';
 
-            // System
             html += '<tr><td colspan="2" class="section-header">&#128421; SYSTEM</td></tr>';
             html += '<tr><td>Hostname</td><td>'      + val(d.hostname)             + '</td></tr>';
             html += '<tr><td>OS</td><td>'            + val(hw.os)                  + '</td></tr>';
@@ -169,7 +163,6 @@ DASHBOARD_HTML = """
             html += '<tr><td>System Serial</td><td>' + val(hw.system_serial)       + '</td></tr>';
             html += '<tr><td>System UUID</td><td>'   + val(hw.system_uuid)         + '</td></tr>';
 
-            // Network summary
             html += '<tr><td colspan="2" class="section-header">&#127760; NETWORK SUMMARY</td></tr>';
             html += '<tr><td>WiFi MAC</td><td>'      + val(hw.wifi_mac)      + '</td></tr>';
             html += '<tr><td>LAN MAC</td><td>'       + val(hw.lan_mac)       + '</td></tr>';
@@ -178,22 +171,19 @@ DASHBOARD_HTML = """
             html += '<tr><td>Public IP</td><td>'     + val(hw.public_ip)     + '</td></tr>';
             html += '</table>';
 
-            // All Adapters
             html += '<div style="margin-top:10px">';
             html += '<div class="section-header" style="margin-bottom:8px">&#128225; ALL NETWORK ADAPTERS</div>';
             if (hw.all_adapters && hw.all_adapters.length > 0) {
                 hw.all_adapters.forEach(function(a) {
                     html += '<div class="adapter-block">';
-                    html += '<div class="adapter-name">&#128268; ' + val(a.name) + ' '
-                          + typeBadge(a.adapter_type) + ' '
-                          + statusBadge(a.connection_status) + '</div>';
-                    html += '<div class="adapter-detail">MAC Address:  <span>' + val(a.mac)         + '</span></div>';
-                    html += '<div class="adapter-detail">IP Address:   <span>' + val(a.ip)          + '</span></div>';
-                    html += '<div class="adapter-detail">Subnet Mask:  <span>' + val(a.subnet)      + '</span></div>';
-                    html += '<div class="adapter-detail">Gateway:      <span>' + val(a.gateway)     + '</span></div>';
-                    html += '<div class="adapter-detail">DHCP Enabled: <span>' + val(a.dhcp)        + '</span></div>';
-                    html += '<div class="adapter-detail">DHCP Server:  <span>' + val(a.dhcp_server) + '</span></div>';
-                    html += '<div class="adapter-detail">DNS Servers:  <span>' + val(a.dns_servers) + '</span></div>';
+                    html += '<div class="adapter-name">&#128268; ' + val(a.name) + ' ' + typeBadge(a.adapter_type) + '</div>';
+                    html += '<div class="adapter-detail">MAC:         <span>' + val(a.mac)         + '</span></div>';
+                    html += '<div class="adapter-detail">IP:          <span>' + val(a.ip)          + '</span></div>';
+                    html += '<div class="adapter-detail">Subnet:      <span>' + val(a.subnet)      + '</span></div>';
+                    html += '<div class="adapter-detail">Gateway:     <span>' + val(a.gateway)     + '</span></div>';
+                    html += '<div class="adapter-detail">DHCP:        <span>' + val(a.dhcp)        + '</span></div>';
+                    html += '<div class="adapter-detail">DHCP Server: <span>' + val(a.dhcp_server) + '</span></div>';
+                    html += '<div class="adapter-detail">DNS:         <span>' + val(a.dns_servers) + '</span></div>';
                     html += '</div>';
                 });
             } else {
@@ -201,14 +191,13 @@ DASHBOARD_HTML = """
             }
             html += '</div>';
 
-            // Bluetooth
             html += '<div style="margin-top:10px">';
-            html += '<div class="section-header" style="margin-bottom:8px">&#128246; BLUETOOTH ADAPTERS</div>';
+            html += '<div class="section-header" style="margin-bottom:8px">&#128246; BLUETOOTH</div>';
             if (hw.bluetooth_adapters && hw.bluetooth_adapters.length > 0) {
                 hw.bluetooth_adapters.forEach(function(b) {
                     html += '<div class="adapter-block">';
                     html += '<div class="adapter-name">&#128309; ' + val(b.name) + '</div>';
-                    html += '<div class="adapter-detail">MAC Address:  <span>' + val(b.mac)          + '</span></div>';
+                    html += '<div class="adapter-detail">MAC:          <span>' + val(b.mac)          + '</span></div>';
                     html += '<div class="adapter-detail">Manufacturer: <span>' + val(b.manufacturer) + '</span></div>';
                     html += '<div class="adapter-detail">Device ID:    <span>' + val(b.device_id)    + '</span></div>';
                     html += '</div>';
@@ -220,51 +209,44 @@ DASHBOARD_HTML = """
 
             html += '<table class="modal-table" style="margin-top:10px">';
 
-            // CPU
             html += '<tr><td colspan="2" class="section-header">&#9881; CPU</td></tr>';
-            html += '<tr><td>CPU Name</td><td>'        + val(hw.cpu_name)    + '</td></tr>';
-            html += '<tr><td>CPU ID</td><td>'          + val(hw.cpu_id)      + '</td></tr>';
-            html += '<tr><td>Cores / Threads</td><td>' + val(hw.cpu_cores)   + ' / ' + val(hw.cpu_threads) + '</td></tr>';
-            html += '<tr><td>Max Speed</td><td>'       + val(hw.cpu_speed)   + ' MHz</td></tr>';
+            html += '<tr><td>Name</td><td>'          + val(hw.cpu_name)    + '</td></tr>';
+            html += '<tr><td>ID</td><td>'            + val(hw.cpu_id)      + '</td></tr>';
+            html += '<tr><td>Cores/Threads</td><td>' + val(hw.cpu_cores)   + ' / ' + val(hw.cpu_threads) + '</td></tr>';
+            html += '<tr><td>Speed</td><td>'         + val(hw.cpu_speed)   + ' MHz</td></tr>';
 
-            // Motherboard
             html += '<tr><td colspan="2" class="section-header">&#9638; MOTHERBOARD</td></tr>';
-            html += '<tr><td>Manufacturer</td><td>'    + val(hw.board_manufacturer) + '</td></tr>';
-            html += '<tr><td>Product</td><td>'         + val(hw.board_product)      + '</td></tr>';
-            html += '<tr><td>Version</td><td>'         + val(hw.board_version)      + '</td></tr>';
-            html += '<tr><td>Serial</td><td>'          + val(hw.board_serial)       + '</td></tr>';
+            html += '<tr><td>Manufacturer</td><td>'  + val(hw.board_manufacturer) + '</td></tr>';
+            html += '<tr><td>Product</td><td>'       + val(hw.board_product)      + '</td></tr>';
+            html += '<tr><td>Version</td><td>'       + val(hw.board_version)      + '</td></tr>';
+            html += '<tr><td>Serial</td><td>'        + val(hw.board_serial)       + '</td></tr>';
 
-            // BIOS
             html += '<tr><td colspan="2" class="section-header">&#128190; BIOS</td></tr>';
-            html += '<tr><td>Manufacturer</td><td>'    + val(hw.bios_manufacturer) + '</td></tr>';
-            html += '<tr><td>Version</td><td>'         + val(hw.bios_version)      + '</td></tr>';
-            html += '<tr><td>Serial</td><td>'          + val(hw.bios_serial)       + '</td></tr>';
-            html += '<tr><td>Date</td><td>'            + val(hw.bios_date)         + '</td></tr>';
+            html += '<tr><td>Manufacturer</td><td>'  + val(hw.bios_manufacturer) + '</td></tr>';
+            html += '<tr><td>Version</td><td>'       + val(hw.bios_version)      + '</td></tr>';
+            html += '<tr><td>Serial</td><td>'        + val(hw.bios_serial)       + '</td></tr>';
+            html += '<tr><td>Date</td><td>'          + val(hw.bios_date)         + '</td></tr>';
 
-            // Disk
             html += '<tr><td colspan="2" class="section-header">&#128191; DISK</td></tr>';
-            html += '<tr><td>Model</td><td>'           + val(hw.disk_model)  + '</td></tr>';
-            html += '<tr><td>Serial</td><td>'          + val(hw.disk_serial) + '</td></tr>';
-            html += '<tr><td>Size</td><td>'            + val(hw.disk_size)   + ' GB</td></tr>';
+            html += '<tr><td>Model</td><td>'         + val(hw.disk_model)  + '</td></tr>';
+            html += '<tr><td>Serial</td><td>'        + val(hw.disk_serial) + '</td></tr>';
+            html += '<tr><td>Size</td><td>'          + val(hw.disk_size)   + ' GB</td></tr>';
 
-            // RAM
             html += '<tr><td colspan="2" class="section-header">&#129504; RAM</td></tr>';
-            html += '<tr><td>Manufacturer</td><td>'    + val(hw.ram_manufacturer) + '</td></tr>';
-            html += '<tr><td>Serial</td><td>'          + val(hw.ram_serial)       + '</td></tr>';
-            html += '<tr><td>Speed</td><td>'           + val(hw.ram_speed)        + ' MHz</td></tr>';
-            html += '<tr><td>Capacity</td><td>'        + val(hw.ram_capacity)     + ' GB</td></tr>';
+            html += '<tr><td>Manufacturer</td><td>'  + val(hw.ram_manufacturer) + '</td></tr>';
+            html += '<tr><td>Serial</td><td>'        + val(hw.ram_serial)       + '</td></tr>';
+            html += '<tr><td>Speed</td><td>'         + val(hw.ram_speed)        + ' MHz</td></tr>';
+            html += '<tr><td>Capacity</td><td>'      + val(hw.ram_capacity)     + ' GB</td></tr>';
 
-            // GPU
             html += '<tr><td colspan="2" class="section-header">&#127918; GPU</td></tr>';
-            html += '<tr><td>Name</td><td>'            + val(hw.gpu_name)   + '</td></tr>';
-            html += '<tr><td>Driver</td><td>'          + val(hw.gpu_driver) + '</td></tr>';
-            html += '<tr><td>VRAM</td><td>'            + val(hw.gpu_ram)    + ' GB</td></tr>';
+            html += '<tr><td>Name</td><td>'          + val(hw.gpu_name)   + '</td></tr>';
+            html += '<tr><td>Driver</td><td>'        + val(hw.gpu_driver) + '</td></tr>';
+            html += '<tr><td>VRAM</td><td>'          + val(hw.gpu_ram)    + ' GB</td></tr>';
 
-            // Security
             html += '<tr><td colspan="2" class="section-header">&#128272; SECURITY</td></tr>';
-            html += '<tr><td>Fingerprint</td><td>'     + val(d.fingerprint) + '</td></tr>';
-            html += '<tr><td>Duplicate</td><td>'       + (d.is_duplicate ? '&#9888;&#65039; YES &#8212; Same device registered before' : '&#9989; No') + '</td></tr>';
-            html += '<tr><td>Registered At</td><td>'   + val(d.timestamp)   + '</td></tr>';
+            html += '<tr><td>Fingerprint</td><td>'   + val(d.fingerprint) + '</td></tr>';
+            html += '<tr><td>Duplicate</td><td>'     + (d.is_duplicate ? '&#9888;&#65039; YES' : '&#9989; No') + '</td></tr>';
+            html += '<tr><td>Registered At</td><td>' + val(d.timestamp)   + '</td></tr>';
 
             html += '</table>';
 
@@ -284,9 +266,11 @@ DASHBOARD_HTML = """
 </html>
 """
 
-
-@app.route('/register-device', methods=['POST'])
+@app.route('/register-device', methods=['POST', 'OPTIONS'])
 def register_device():
+    if request.method == 'OPTIONS':
+        return '', 200
+
     data        = request.json or {}
     mac         = data.get('mac_address', 'N/A')
     fingerprint = data.get('fingerprint', 'N/A')
@@ -315,7 +299,6 @@ def register_device():
         "is_duplicate": is_duplicate
     }), 200
 
-
 @app.route('/')
 def dashboard():
     duplicate_count = sum(1 for d in devices if d['is_duplicate'])
@@ -328,14 +311,12 @@ def dashboard():
         count           = len(devices),
         unique_count    = unique_count,
         duplicate_count = duplicate_count,
-        devices_json    = json.dumps(devices),  # pre-serialized string; template uses | safe only
+        devices_json    = json.dumps(devices),
     )
-
 
 @app.route('/health')
 def health():
     return jsonify({"status": "ok"}), 200
-
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
