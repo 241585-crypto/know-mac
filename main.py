@@ -131,7 +131,7 @@ DASHBOARD_HTML = """
     <script>
         // FIX: Use | tojson | safe so Jinja2 does NOT HTML-escape the JSON.
         // Without | safe, quotes become &quot; and JSON.parse / var assignment breaks.
-        var devices = {{ devices_json | tojson | safe }};
+        var devices = {{ devices_json | safe }};
 
         function val(v) {
             return (v !== null && v !== undefined && v !== '') ? String(v) : 'N/A';
@@ -322,14 +322,13 @@ def dashboard():
     fingerprints    = set(d['fingerprint'] for d in devices if d['fingerprint'] != 'N/A')
     unique_count    = len(fingerprints)
 
-    # Pass devices as a plain Python list; tojson in the template handles serialisation.
     return render_template_string(
         DASHBOARD_HTML,
         devices         = devices,
         count           = len(devices),
         unique_count    = unique_count,
         duplicate_count = duplicate_count,
-        devices_json    = devices,   # NOTE: now a list, not a pre-serialised string
+        devices_json    = json.dumps(devices),  # pre-serialized string; template uses | safe only
     )
 
 
