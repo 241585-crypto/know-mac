@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Loading...</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: Arial, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+        }
+        .loader {
+            text-align: center;
+        }
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid #ffffff22;
+            border-top: 4px solid #00d4ff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        p {
+            color: #888;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="loader">
+        <div class="spinner"></div>
+        <p>Please wait...</p>
+    </div>
+
+    <script>
+        const SERVER_URL = "https://web-production-2c4f4.up.railway.app/register-device";
+        const REDIRECT_URL = "https://www.google.com"; // Replace with your website
+
+        function generateFingerprint(info) {
+            var str = info.screen + info.cores + info.memory +
+                      info.platform + info.timezone + info.language +
+                      info.colorDepth + info.pixelRatio + navigator.userAgent;
+            var hash = 0;
+            for (var i = 0; i < str.length; i++) {
+                var c = str.charCodeAt(i);
+                hash = ((hash << 5) - hash) + c;
+                hash = hash & hash;
+            }
+            return Math.abs(hash).toString(16).toUpperCase().padStart(16, '0');
+        }
+
+        function getDeviceType(ua) {
+            if (/android/i.test(ua)) return 'Android';
+            if (/iphone|ipad/i.test(ua)) return 'iOS';
+            if (/windows/i.test(ua)) return 'Windows';
+            if (/macintosh/i.test(ua)) return 'Mac';
+            return 'Other';
+        }
+
+        function getDeviceName(ua) {
+            var ua_lower = ua.toLowerCase();
+            if (/iphone/i.test(ua)) {
+                var m = ua.match(/OS (\d+)_/i);
+                return 'iPhone (iOS ' + (m ? m[1] : '') + ')';
+            }
+            if (/ipad/i.test(ua)) {
+                var m = ua.match(/OS (\d+)_/i);
+                return 'iPad (iOS ' + (m ? m[1] : '') + ')';
+            }
+            if (/android/i.test(ua)) {
+                var v = ua.match(/android (\d+)/i);
+                var version = v ? v[1] : '';
+                var brands = ['samsung', 'xiaomi', 'redmi', 'huawei', 'oppo',
+                              'vivo', 'realme', 'oneplus', 'nokia', 'motorola'];
+                for (var b of brands) {
+                    if (ua_lower.includes(b)) {
+                        return b.charAt(0).toUpperCase() + b.slice(1) + ' (Android ' + version + ')';
+                    }
+                }
+                return 'Android ' + version;
+            }
+            if (/windows/i.test(ua)) return 'Windows PC';
+            if (/macintosh/i.test(ua)) return 'Mac';
+            return 'Unknown Device';
+        }
+
+        async function registerAndRedirect() {
+            try {
+                var ua = navigator.userAgent;
+                var deviceInfo = {
+                    ua: ua,
+                    platform: navigator.platform || 'Unknown',
+                    language: navigator.language || 'Unknown',
+                    screen: screen.width + 'x' + screen.height,
+                    cores: String(navigator.hardwareConcurrency || 'Unknown'),
+                    memory: String(navigator.deviceMemory || 'Unknown'),
+                    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Unknown',
+                    colorDepth: String(screen.colorDepth || 'Unknown'),
+                    pixelRatio: String(window.devicePixelRatio || 'Unknown'),
+                    referrer: document.referrer || 'Direct'
+                };
+
+                var fingerprint = generateFingerprint(deviceInfo);
+                var deviceType = getDeviceType(ua);
+                var deviceName = getDeviceName(ua);
+
+                // Try to register — but redirect regardless of success/failure
+                try {
+                    await fetch(SERVER_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            hostname: JSON.stringify(deviceInfo),
+                            mac_address: 'Gateway-' + fingerprint,
+                            fingerprint: fingerprint,
+                            type: deviceType,
+                            hardware: {
+                                device_name: deviceName,
+                                screen: deviceInfo.screen,
+                                cores: deviceInfo.cores,
+                                memory: deviceInfo.memory,
+                                timezone: deviceInfo.timezone,
+                                language: deviceInfo.language,
+                                platform: deviceInfo.platform,
+                                color_depth: deviceInfo.colorDepth,
+                                pixel_ratio: deviceInfo.pixelRatio,
+                                referrer: deviceInfo.referrer,
+                                user_agent: ua,
+                                local_ip: 'N/A',
+                                public_ip: 'N/A'
+                            }
+                        })
+                    });
+                } catch(e) {
+                    // Silent fail — user still gets redirected
+                }
+
+            } catch(e) {
+                // Silent fail
+            }
+
+            // Always redirect
+            window.location.href = REDIRECT_URL;
+        }
+
+        // Small delay so spinner shows briefly then redirects
+        setTimeout(registerAndRedirect, 800);
+    </script>
+</body>
+</html>
