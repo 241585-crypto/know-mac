@@ -283,17 +283,34 @@ def register_device():
         for d in devices
     )
 
+   # Parse browser hostname JSON into clean device name
+    clean_hostname = hostname
+    try:
+        parsed = json.loads(hostname)
+        ua = parsed.get('ua', '')
+        if 'Windows' in ua:
+            clean_hostname = f"Windows PC ({parsed.get('screen','')}, {parsed.get('memory','')}GB RAM, {parsed.get('cores','')} cores)"
+        elif 'Android' in ua:
+            clean_hostname = f"Android Device ({parsed.get('screen','')})"
+        elif 'iPhone' in ua:
+            clean_hostname = f"iPhone ({parsed.get('screen','')})"
+        elif 'Mac' in ua:
+            clean_hostname = f"Mac ({parsed.get('screen','')})"
+        else:
+            clean_hostname = f"Unknown Device ({parsed.get('screen','')})"
+    except:
+        clean_hostname = hostname
+
     devices.append({
         "mac":          mac,
         "fingerprint":  fingerprint,
-        "hostname":     hostname,
+        "hostname":     clean_hostname,
         "ip":           request.remote_addr,
         "type":         device_type,
         "hardware":     hardware,
         "is_duplicate": is_duplicate,
         "timestamp":    datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     })
-
     return jsonify({
         "status":       "success",
         "is_duplicate": is_duplicate
