@@ -18,13 +18,11 @@ DASHBOARD_HTML = """
 <html>
 <head>
     <title>Device Registration Dashboard</title>
-    <meta http-equiv="refresh" content="10">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: Arial, sans-serif; background: #1a1a2e; color: #eee; padding: 20px; }
-        h1 { color: #00d4ff; margin-bottom: 5px; }
-        .subtitle { color: #888; font-size: 14px; margin-bottom: 20px; }
+        h1 { color: #00d4ff; margin-bottom: 20px; }
         .stats { display: flex; gap: 15px; margin-bottom: 25px; flex-wrap: wrap; }
         .stat-card { background: #16213e; border-radius: 10px; padding: 15px 25px; text-align: center; min-width: 120px; }
         .stat-card .number { font-size: 28px; font-weight: bold; color: #00d4ff; }
@@ -77,7 +75,6 @@ DASHBOARD_HTML = """
 </head>
 <body>
     <h1>&#128225; Device Registration Dashboard</h1>
-    <p class="subtitle">Auto-refreshes every 10 seconds</p>
 
     <div class="stats">
         <div class="stat-card">
