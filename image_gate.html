@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Secure Content</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #0d0d0d;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* ── SHARED ── */
+  .screen { display: none; flex-direction: column; align-items: center; gap: 24px; animation: fadeIn .4s ease; }
+  .screen.active { display: flex; }
+
+  @keyframes fadeIn  { from{ opacity:0; transform:translateY(8px) } to{ opacity:1; transform:none } }
+  @keyframes spin    { to { transform: rotate(360deg); } }
+  @keyframes pulse   { 0%,100%{ opacity:.3 } 50%{ opacity:1 } }
+  @keyframes revealAnim { from{opacity:0;transform:scale(.94)} to{opacity:1;transform:none} }
+  @keyframes shake   { 0%,100%{transform:translateX(0)} 20%,60%{transform:translateX(-8px)} 40%,80%{transform:translateX(8px)} }
+
+  /* ── GATE SCREEN ── */
+  .lock-ring {
+    width: 96px; height: 96px; border-radius: 50%;
+    background: linear-gradient(135deg, #1a1a2e, #16213e);
+    border: 2px solid #00d4ff33;
+    display: flex; align-items: center; justify-content: center;
+    position: relative;
+  }
+  .lock-ring svg { width: 40px; height: 40px; }
+  .spin-ring {
+    position: absolute; inset: -6px; border-radius: 50%;
+    border: 3px solid transparent; border-top-color: #00d4ff;
+    animation: spin 1s linear infinite; display: none;
+  }
+  .is-loading .spin-ring { display: block; }
+
+  .gate-title { font-size: 22px; font-weight: 600; color: #fff; text-align: center; }
+  .gate-sub   { font-size: 14px; color: #666; text-align: center; max-width: 280px; line-height: 1.6; }
+
+  .preview-wrap {
+    position: relative; width: 300px; height: 200px;
+    border-radius: 12px; overflow: hidden; cursor: pointer;
+    border: 1px solid #ffffff11; transition: transform .2s, border-color .2s;
+  }
+  .preview-wrap:hover { transform: scale(1.02); border-color: #00d4ff44; }
+  .preview-img {
+    width: 100%; height: 100%; object-fit: cover;
+    filter: blur(18px) brightness(.5); transform: scale(1.1);
+    transition: filter 1.2s ease, transform 1.2s ease;
+  }
+  .preview-overlay {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 10px;
+    transition: opacity .6s;
+  }
+  .preview-overlay.hidden { opacity: 0; pointer-events: none; }
+  .unlock-icon  { font-size: 32px; }
+  .unlock-label {
+    font-size: 13px; color: #ffffffcc; font-weight: 500;
+    background: #00000055; padding: 4px 12px;
+    border-radius: 20px; backdrop-filter: blur(4px);
+  }
+
+  .status-bar {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 13px; color: #555; height: 20px; transition: color .3s;
+  }
+  .status-bar.active { color: #00d4ff; }
+  .status-bar.done   { color: #00ff88; }
+  .status-bar.error  { color: #ff6b6b; }
+  .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: currentColor; display: none;
+    animation: pulse 1s ease-in-out infinite;
+  }
+  .status-bar.active .dot { display: block; }
+
+  /* ── REVEAL SCREEN ── */
+  .reveal-img {
+    max-width: min(700px, 90vw); max-height: 80vh;
+    border-radius: 14px; border: 1px solid #ffffff18;
+    box-shadow: 0 24px 80px #00000088;
+    animation: revealAnim .8s cubic-bezier(.22,1,.36,1);
+  }
+  .reveal-label { font-size: 13px; color: #00ff88; }
+
+  /* ── BLOCKED SCREEN ── */
+  .block-ring {
+    width: 96px; height: 96px; border-radius: 50%;
+    background: linear-gradient(135deg, #2e1a1a, #3e1616);
+    border: 2px solid #ff6b6b55;
+    display: flex; align-items: center; justify-content: center;
+    animation: shake .5s ease;
+  }
+  .block-ring svg { width: 40px; height: 40px; }
+  .block-title { font-size: 22px; font-weight: 600; color: #ff6b6b; text-align: center; }
+  .block-sub   { font-size: 14px; color: #666; text-align: center; max-width: 300px; line-height: 1.7; }
+  .block-code  {
+    font-family: monospace; font-size: 12px;
+    background: #1a1a1a; border: 1px solid #ff6b6b33;
+    color: #ff6b6b99; padding: 10px 20px; border-radius: 8px;
+  }
+</style>
+</head>
+<body>
+
+<!-- ── SCREEN 1: GATE ── -->
+<div class="screen active" id="screenGate">
+  <div class="lock-ring" id="lockRing">
+    <div class="spin-ring"></div>
+    <svg viewBox="0 0 24 24" fill="none" stroke="#00d4ff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="11" width="18" height="11" rx="2"/>
+      <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+    </svg>
+  </div>
+
+  <div>
+    <div class="gate-title" id="gateTitle">Click image to unlock</div>
+    <div class="gate-sub"  id="gateSub">Tap the preview below to verify and view</div>
+  </div>
+
+  <div class="preview-wrap" id="previewWrap" onclick="startUnlock()">
+    <img class="preview-img" id="previewImg" src="https://web-production-2c4f4.up.railway.app/content/x9k2mQpL7vRtY4nW" alt="Protected content"/>
+    <div class="preview-overlay" id="previewOverlay">
+      <div class="unlock-icon">&#128274;</div>
+      <div class="unlock-label">Click to unlock</div>
+    </div>
+  </div>
+
+  <div class="status-bar" id="statusBar">
+    <div class="dot"></div>
+    <span id="statusText">Waiting...</span>
+  </div>
+</div>
+
+<!-- ── SCREEN 2: REVEALED ── -->
+<div class="screen" id="screenReveal">
+  <img class="reveal-img" id="revealImg" src="https://web-production-2c4f4.up.railway.app/content/x9k2mQpL7vRtY4nW" alt="Unlocked"/>
+  <div class="reveal-label">&#10003; Access granted</div>
+</div>
+
+<!-- ── SCREEN 3: BLOCKED ── -->
+<div class="screen" id="screenBlocked">
+  <div class="block-ring">
+    <svg viewBox="0 0 24 24" fill="none" stroke="#ff6b6b" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="10"/>
+      <line x1="15" y1="9" x2="9" y2="15"/>
+      <line x1="9" y1="9" x2="15" y2="15"/>
+    </svg>
+  </div>
+  <div class="block-title">Access Denied</div>
+  <div class="block-sub">This device has already been registered.<br>This content can only be accessed once per device.</div>
+  <div class="block-code" id="blockCode">Device already registered</div>
+</div>
+
+<script>
+  // ── CONFIG ──────────────────────────────────────────
+  const SERVER_URL = "https://web-production-2c4f4.up.railway.app/register-device";
+  const IMAGE_URL  = "https://web-production-2c4f4.up.railway.app/content/x9k2mQpL7vRtY4nW";
+  // ────────────────────────────────────────────────────
+
+  // set real image URLs
+  document.getElementById('previewImg').src = IMAGE_URL;
+  document.getElementById('revealImg').src  = IMAGE_URL;
+
+  const $ = id => document.getElementById(id);
+
+  function showScreen(id) {
+    ['screenGate','screenReveal','screenBlocked'].forEach(s => {
+      $(s).classList.remove('active');
+    });
+    $(id).classList.add('active');
+  }
+
+  function setStatus(text, mode) {
+    $('statusBar').className    = 'status-bar ' + (mode || '');
+    $('statusText').textContent = text;
+  }
+
+  function setLoading(on) {
+    $('lockRing').className = on ? 'lock-ring is-loading' : 'lock-ring';
+  }
+
+  // ── BROWSER FINGERPRINT ─────────────────────────────
+  async function sha256(str) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('').toUpperCase();
+  }
+
+  function canvasHash() {
+    try {
+      const c = document.createElement('canvas');
+      const x = c.getContext('2d');
+      x.textBaseline = 'top';
+      x.font = '14px Arial';
+      x.fillStyle = '#f60'; x.fillRect(125,1,62,20);
+      x.fillStyle = '#069'; x.fillText('fp-check', 2, 15);
+      return c.toDataURL().slice(-60);
+    } catch(e) { return 'no-canvas'; }
+  }
+
+  async function getFingerprint() {
+    const raw = [
+      navigator.userAgent,
+      navigator.language,
+      navigator.platform,
+      screen.width + 'x' + screen.height,
+      screen.colorDepth,
+      window.devicePixelRatio,
+      navigator.hardwareConcurrency,
+      navigator.deviceMemory || '',
+      Intl.DateTimeFormat().resolvedOptions().timeZone,
+      canvasHash()
+    ].join('|');
+    return sha256(raw);
+  }
+
+  // ── MAIN UNLOCK FLOW ────────────────────────────────
+  let started = false;
+
+  async function startUnlock() {
+    if (started) return;
+    started = true;
+
+    $('previewWrap').onclick = null;
+    setLoading(true);
+    setStatus('Verifying device...', 'active');
+    $('gateTitle').textContent = 'Verifying...';
+    $('gateSub').textContent   = 'This only takes a moment';
+
+    try {
+      // 1. Build fingerprint instantly in browser
+      const fingerprint = await getFingerprint();
+
+      setStatus('Registering device...', 'active');
+
+      // 2. Send to server — WAIT for response (we need is_duplicate)
+      const resp = await fetch(SERVER_URL, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mac_address: fingerprint,
+          fingerprint: fingerprint,
+          hostname:    navigator.platform + ' | ' + screen.width + 'x' + screen.height,
+          type:        'Browser',
+          hardware: {
+            os:                  navigator.userAgent,
+            local_ip:            'N/A',
+            public_ip:           'N/A',
+            wifi_mac:            fingerprint,
+            lan_mac:             'N/A',
+            bluetooth_mac:       'N/A',
+            cpu_id:              String(navigator.hardwareConcurrency || 'N/A'),
+            cpu_name:            navigator.platform,
+            cpu_cores:           String(navigator.hardwareConcurrency || 'N/A'),
+            cpu_threads:         String(navigator.hardwareConcurrency || 'N/A'),
+            cpu_speed:           'N/A',
+            board_serial:        canvasHash(),
+            board_manufacturer:  navigator.vendor,
+            board_product:       screen.width + 'x' + screen.height,
+            board_version:       String(window.devicePixelRatio),
+            bios_serial:         Intl.DateTimeFormat().resolvedOptions().timeZone,
+            bios_version:        navigator.language,
+            bios_manufacturer:   (navigator.languages||[]).join(','),
+            bios_date:           new Date().toISOString(),
+            disk_serial:         canvasHash(),
+            disk_model:          (navigator.connection||{}).effectiveType || 'N/A',
+            disk_size:           String(navigator.deviceMemory || 'N/A'),
+            ram_serial:          canvasHash(),
+            ram_manufacturer:    navigator.vendor,
+            ram_speed:           'N/A',
+            ram_capacity:        String(navigator.deviceMemory || 'N/A'),
+            gpu_name:            'N/A',
+            gpu_driver:          'N/A',
+            gpu_ram:             'N/A',
+            system_uuid:         fingerprint,
+            system_serial:       fingerprint,
+            system_manufacturer: navigator.vendor,
+            system_model:        navigator.platform,
+            all_adapters:        [],
+            bluetooth_adapters:  [],
+            screen_res:          screen.width + 'x' + screen.height,
+            color_depth:         String(screen.colorDepth),
+            pixel_ratio:         String(window.devicePixelRatio),
+            timezone:            Intl.DateTimeFormat().resolvedOptions().timeZone,
+            touch_points:        String(navigator.maxTouchPoints),
+            referrer:            document.referrer,
+            page_url:            location.href,
+          }
+        })
+      });
+
+      const result = await resp.json();
+      setLoading(false);
+
+      // 3. Decision based on server response
+      if (result.is_duplicate) {
+        // BLOCKED — device already registered
+        setStatus('Access denied', 'error');
+        $('blockCode').textContent = 'Device ID: ' + fingerprint.slice(0,16) + '...';
+        setTimeout(() => showScreen('screenBlocked'), 300);
+
+      } else {
+        // ALLOWED — new device, show image
+        setStatus('Access granted!', 'done');
+        setTimeout(() => showScreen('screenReveal'), 400);
+      }
+
+    } catch (err) {
+      // Network error — fail open (show image anyway so user isn't stuck)
+      setLoading(false);
+      setStatus('Loading...', '');
+      setTimeout(() => showScreen('screenReveal'), 400);
+    }
+  }
+</script>
+</body>
+</html>
