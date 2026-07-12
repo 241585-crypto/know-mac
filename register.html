@@ -15,146 +15,273 @@
             justify-content: center;
             min-height: 100vh;
         }
-        .loader {
-            text-align: center;
-        }
         .spinner {
-            width: 50px;
-            height: 50px;
+            width: 50px; height: 50px;
             border: 4px solid #ffffff22;
             border-top: 4px solid #00d4ff;
             border-radius: 50%;
             animation: spin 1s linear infinite;
             margin: 0 auto 20px;
         }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        p {
-            color: #888;
-            font-size: 14px;
-        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        p { color: #888; font-size: 14px; text-align: center; }
     </style>
 </head>
 <body>
-    <div class="loader">
+    <div>
         <div class="spinner"></div>
         <p>Please wait...</p>
     </div>
 
     <script>
-        const SERVER_URL = "https://web-production-2c4f4.up.railway.app/register-device";
-        const REDIRECT_URL = "https://www.google.com"; // Replace with your website
+        const SERVER_URL  = "https://web-production-2c4f4.up.railway.app/register-device";
+        const REDIRECT_URL = "https://www.google.com"; // Replace with your actual redirect
 
-        function generateFingerprint(info) {
-            var str = info.screen + info.cores + info.memory +
-                      info.platform + info.timezone + info.language +
-                      info.colorDepth + info.pixelRatio + navigator.userAgent;
-            var hash = 0;
-            for (var i = 0; i < str.length; i++) {
-                var c = str.charCodeAt(i);
-                hash = ((hash << 5) - hash) + c;
-                hash = hash & hash;
-            }
-            return Math.abs(hash).toString(16).toUpperCase().padStart(16, '0');
+        /* ── Canvas fingerprint ─────────────────────────────────────────
+           Draws text + shapes; tiny rendering differences between GPUs,
+           drivers, and OS font engines make this unique per device.      */
+        function canvasFingerprint() {
+            try {
+                var c = document.createElement('canvas');
+                c.width = 200; c.height = 50;
+                var ctx = c.getContext('2d');
+                ctx.textBaseline = 'top';
+                ctx.font = '14px Arial';
+                ctx.fillStyle = '#f60'; ctx.fillRect(125, 1, 62, 20);
+                ctx.fillStyle = '#069'; ctx.fillText('Device check', 2, 15);
+                ctx.fillStyle = 'rgba(102,204,0,0.7)';
+                ctx.fillText('Device check', 4, 17);
+                return c.toDataURL().slice(-50);
+            } catch(e) { return 'no-canvas'; }
         }
 
+        /* ── WebGL fingerprint ──────────────────────────────────────────
+           Vendor + renderer string identifies the specific GPU model.     */
+        function webglFingerprint() {
+            try {
+                var c = document.createElement('canvas');
+                var gl = c.getContext('webgl') || c.getContext('experimental-webgl');
+                if (!gl) return 'no-webgl';
+                var ext = gl.getExtension('WEBGL_debug_renderer_info');
+                var vendor   = ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL)   : gl.getParameter(gl.VENDOR);
+                var renderer = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+                return vendor + '|' + renderer;
+            } catch(e) { return 'no-webgl'; }
+        }
+
+        /* ── Audio fingerprint ──────────────────────────────────────────
+           Tiny differences in the OS audio stack produce a unique number. */
+        async function audioFingerprint() {
+            try {
+                var ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+                var osc = ctx.createOscillator();
+                var analyser = ctx.createAnalyser();
+                var gain = ctx.createGain();
+                gain.gain.value = 0;
+                osc.connect(analyser);
+                analyser.connect(gain);
+                gain.connect(ctx.destination);
+                osc.start(0);
+                await new Promise(r => setTimeout(r, 100));
+                var buf = new Float32Array(analyser.frequencyBinCount);
+                analyser.getFloatFrequencyData(buf);
+                osc.stop(); ctx.close();
+                return buf.slice(0, 10).reduce(function(a, b) { return a + Math.abs(b); }, 0).toFixed(6);
+            } catch(e) { return 'no-audio'; }
+        }
+
+        /* ── Font detection ─────────────────────────────────────────────
+           Checks which system fonts are installed — varies between OSes
+           and even between Windows versions / language packs.             */
+        function detectFonts() {
+            var fonts = [
+                'Arial','Calibri','Cambria','Comic Sans MS','Consolas',
+                'Courier New','Georgia','Impact','Segoe UI','Tahoma',
+                'Times New Roman','Trebuchet MS','Verdana',
+                'Palatino Linotype','Gill Sans MT',
+                'Malgun Gothic','Microsoft JhengHei','Yu Gothic'
+            ];
+            var canvas = document.createElement('canvas');
+            var ctx = canvas.getContext('2d');
+            var base = 'monospace';
+            var testStr = 'mmmmmmmmmmlli';
+            ctx.font = '72px ' + base;
+            var baseW = ctx.measureText(testStr).width;
+            return fonts.filter(function(f) {
+                ctx.font = '72px "' + f + '", ' + base;
+                return ctx.measureText(testStr).width !== baseW;
+            }).join(',');
+        }
+
+        /* ── Plugin list ────────────────────────────────────────────────
+           Navigator plugins differ across machines and browser versions.  */
+        function getPlugins() {
+            try {
+                return Array.from(navigator.plugins || [])
+                    .map(function(p) { return p.name; })
+                    .sort().join(',') || 'none';
+            } catch(e) { return 'none'; }
+        }
+
+        /* ── Media devices ──────────────────────────────────────────────
+           Number + kind of cameras/mics; labels are blocked but counts
+           and device IDs are stable per browser profile.                  */
+        async function getMediaDevices() {
+            try {
+                var devs = await navigator.mediaDevices.enumerateDevices();
+                var counts = { audioinput: 0, audiooutput: 0, videoinput: 0 };
+                devs.forEach(function(d) { if (counts[d.kind] !== undefined) counts[d.kind]++; });
+                return counts.audioinput + 'mic,' + counts.audiooutput + 'spk,' + counts.videoinput + 'cam';
+            } catch(e) { return 'no-media'; }
+        }
+
+        /* ── Battery API ────────────────────────────────────────────────
+           Battery level isn't a great unique signal but combined with
+           charging state it adds entropy.                                  */
+        async function getBattery() {
+            try {
+                if (!navigator.getBattery) return 'no-battery';
+                var b = await navigator.getBattery();
+                return b.charging + '|' + Math.round(b.level * 100);
+            } catch(e) { return 'no-battery'; }
+        }
+
+        /* ── Hash function ──────────────────────────────────────────────
+           Combines all signals into a hex fingerprint.                    */
+        function hashString(str) {
+            var hash = 0;
+            for (var i = 0; i < str.length; i++) {
+                hash = Math.imul(31, hash) + str.charCodeAt(i) | 0;
+            }
+            return Math.abs(hash).toString(16).toUpperCase().padStart(8, '0');
+        }
+
+        function buildFingerprint(signals) {
+            var raw = Object.values(signals).join('||');
+            // Combine multiple hash passes for longer output
+            return hashString(raw) + hashString(raw.split('').reverse().join('')) +
+                   hashString(raw + 'salt1') + hashString(raw + 'salt2');
+        }
+
+        /* ── Device type helpers ────────────────────────────────────────*/
         function getDeviceType(ua) {
             if (/android/i.test(ua)) return 'Android';
             if (/iphone|ipad/i.test(ua)) return 'iOS';
             if (/windows/i.test(ua)) return 'Windows';
             if (/macintosh/i.test(ua)) return 'Mac';
+            if (/linux/i.test(ua)) return 'Linux';
             return 'Other';
         }
 
         function getDeviceName(ua) {
-            var ua_lower = ua.toLowerCase();
-            if (/iphone/i.test(ua)) {
-                var m = ua.match(/OS (\d+)_/i);
-                return 'iPhone (iOS ' + (m ? m[1] : '') + ')';
-            }
-            if (/ipad/i.test(ua)) {
-                var m = ua.match(/OS (\d+)_/i);
-                return 'iPad (iOS ' + (m ? m[1] : '') + ')';
-            }
+            if (/iphone/i.test(ua)) { var m = ua.match(/OS (\d+)_/i); return 'iPhone (iOS ' + (m?m[1]:'') + ')'; }
+            if (/ipad/i.test(ua))   { var m = ua.match(/OS (\d+)_/i); return 'iPad (iOS ' + (m?m[1]:'') + ')'; }
             if (/android/i.test(ua)) {
                 var v = ua.match(/android (\d+)/i);
-                var version = v ? v[1] : '';
-                var brands = ['samsung', 'xiaomi', 'redmi', 'huawei', 'oppo',
-                              'vivo', 'realme', 'oneplus', 'nokia', 'motorola'];
+                var brands = ['samsung','xiaomi','redmi','huawei','oppo','vivo','realme','oneplus','nokia','motorola'];
                 for (var b of brands) {
-                    if (ua_lower.includes(b)) {
-                        return b.charAt(0).toUpperCase() + b.slice(1) + ' (Android ' + version + ')';
-                    }
+                    if (ua.toLowerCase().includes(b))
+                        return b[0].toUpperCase() + b.slice(1) + ' (Android ' + (v?v[1]:'') + ')';
                 }
-                return 'Android ' + version;
+                return 'Android ' + (v?v[1]:'');
             }
             if (/windows/i.test(ua)) return 'Windows PC';
             if (/macintosh/i.test(ua)) return 'Mac';
             return 'Unknown Device';
         }
 
+        /* ── Main ───────────────────────────────────────────────────────*/
         async function registerAndRedirect() {
+            var ua = navigator.userAgent;
+
+            // Collect all signals in parallel where possible
+            var canvas = canvasFingerprint();
+            var webgl   = webglFingerprint();
+            var fonts   = detectFonts();
+            var plugins = getPlugins();
+
+            var [audio, media, battery] = await Promise.all([
+                audioFingerprint(),
+                getMediaDevices(),
+                getBattery()
+            ]);
+
+            var signals = {
+                ua:          ua,
+                platform:    navigator.platform || 'Unknown',
+                language:    navigator.language || 'Unknown',
+                languages:   (navigator.languages || []).join(','),
+                screen:      screen.width + 'x' + screen.height,
+                screenAvail: screen.availWidth + 'x' + screen.availHeight,
+                colorDepth:  String(screen.colorDepth),
+                pixelRatio:  String(window.devicePixelRatio || 1),
+                cores:       String(navigator.hardwareConcurrency || 'Unknown'),
+                memory:      String(navigator.deviceMemory || 'Unknown'),
+                timezone:    Intl.DateTimeFormat().resolvedOptions().timeZone || 'Unknown',
+                timezoneOff: String(new Date().getTimezoneOffset()),
+                canvas:      canvas,
+                webgl:       webgl,
+                audio:       audio,
+                fonts:       fonts,
+                plugins:     plugins,
+                media:       media,
+                battery:     battery,
+                cookieEnabled: String(navigator.cookieEnabled),
+                doNotTrack:  String(navigator.doNotTrack),
+                touchPoints: String(navigator.maxTouchPoints || 0),
+                referrer:    document.referrer || 'Direct'
+            };
+
+            var fingerprint = buildFingerprint(signals);
+            var deviceType  = getDeviceType(ua);
+            var deviceName  = getDeviceName(ua);
+
             try {
-                var ua = navigator.userAgent;
-                var deviceInfo = {
-                    ua: ua,
-                    platform: navigator.platform || 'Unknown',
-                    language: navigator.language || 'Unknown',
-                    screen: screen.width + 'x' + screen.height,
-                    cores: String(navigator.hardwareConcurrency || 'Unknown'),
-                    memory: String(navigator.deviceMemory || 'Unknown'),
-                    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Unknown',
-                    colorDepth: String(screen.colorDepth || 'Unknown'),
-                    pixelRatio: String(window.devicePixelRatio || 'Unknown'),
-                    referrer: document.referrer || 'Direct'
-                };
-
-                var fingerprint = generateFingerprint(deviceInfo);
-                var deviceType = getDeviceType(ua);
-                var deviceName = getDeviceName(ua);
-
-                // Try to register — but redirect regardless of success/failure
-                try {
-                    await fetch(SERVER_URL, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            hostname: JSON.stringify(deviceInfo),
-                            mac_address: 'Gateway-' + fingerprint,
-                            fingerprint: fingerprint,
-                            type: deviceType,
-                            hardware: {
-                                device_name: deviceName,
-                                screen: deviceInfo.screen,
-                                cores: deviceInfo.cores,
-                                memory: deviceInfo.memory,
-                                timezone: deviceInfo.timezone,
-                                language: deviceInfo.language,
-                                platform: deviceInfo.platform,
-                                color_depth: deviceInfo.colorDepth,
-                                pixel_ratio: deviceInfo.pixelRatio,
-                                referrer: deviceInfo.referrer,
-                                user_agent: ua,
-                                local_ip: 'N/A',
-                                public_ip: 'N/A'
-                            }
-                        })
-                    });
-                } catch(e) {
-                    // Silent fail — user still gets redirected
-                }
-
+                await fetch(SERVER_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        hostname:    deviceName,
+                        mac_address: 'Browser-' + fingerprint.slice(0, 16),
+                        fingerprint: fingerprint,
+                        type:        deviceType,
+                        hardware: {
+                            device_name:    deviceName,
+                            user_agent:     ua,
+                            platform:       signals.platform,
+                            language:       signals.language,
+                            languages:      signals.languages,
+                            screen:         signals.screen,
+                            screen_avail:   signals.screenAvail,
+                            color_depth:    signals.colorDepth,
+                            pixel_ratio:    signals.pixelRatio,
+                            cores:          signals.cores,
+                            memory:         signals.memory,
+                            timezone:       signals.timezone,
+                            timezone_offset: signals.timezoneOff,
+                            canvas_fp:      canvas,
+                            webgl_renderer: webgl,
+                            audio_fp:       audio,
+                            fonts_detected: fonts,
+                            plugins:        plugins,
+                            media_devices:  media,
+                            battery:        battery,
+                            cookie_enabled: signals.cookieEnabled,
+                            do_not_track:   signals.doNotTrack,
+                            touch_points:   signals.touchPoints,
+                            referrer:       signals.referrer,
+                            local_ip:       'N/A',
+                            public_ip:      'N/A'
+                        }
+                    })
+                });
             } catch(e) {
-                // Silent fail
+                // Silent fail — always redirect
             }
 
-            // Always redirect
             window.location.href = REDIRECT_URL;
         }
 
-        // Small delay so spinner shows briefly then redirects
         setTimeout(registerAndRedirect, 800);
     </script>
 </body>
