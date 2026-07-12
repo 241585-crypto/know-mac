@@ -10,7 +10,7 @@ DASHBOARD_HTML = """
 <html>
 <head>
     <title>Device Registration Dashboard</title>
-    <meta http-equiv="refresh" content="10">
+
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -62,7 +62,7 @@ DASHBOARD_HTML = """
 </head>
 <body>
     <h1>&#128225; Device Registration Dashboard</h1>
-    <p class="subtitle">Auto-refreshes every 10 seconds</p>
+    <p class="subtitle">Device Registration Dashboard</p>
 
     <div class="stats">
         <div class="stat-card">
