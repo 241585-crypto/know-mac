@@ -1,11 +1,8 @@
-from flask import Flask, request, jsonify, render_template_string, send_from_directory
-from flask_cors import CORS
+from flask import Flask, request, jsonify, render_template_string
 from datetime import datetime
 import json
-import os
 
 app = Flask(__name__)
-CORS(app)   # allow browser requests from any origin (image_gate.html)
 devices = []
 
 DASHBOARD_HTML = """
@@ -335,27 +332,10 @@ def dashboard():
     )
 
 
-@app.route('/gate')
-def gate():
-    """Serve the image gate page to users."""
-    return send_from_directory('.', 'image_gate.html')
-
-# Secret token in the URL — only registered devices get this URL from JS
-# Direct access to /static/ is blocked; image only served via this secret route
-SECRET_IMAGE_TOKEN = "x9k2mQpL7vRtY4nW"   # change this to anything random
-
-@app.route('/content/<token>')
-def serve_image(token):
-    """Only serve the image if the token matches — prevents direct URL access."""
-    if token != SECRET_IMAGE_TOKEN:
-        return jsonify({"error": "Not found"}), 404
-    return send_from_directory('static', 'content.jpg')
-
 @app.route('/health')
 def health():
     return jsonify({"status": "ok"}), 200
 
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=5000)
