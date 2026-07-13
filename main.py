@@ -8,7 +8,7 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "change-this-secret-key-later")
 
 # Hardcoded password as requested — change this later via env var APP_PASSWORD
-APP_PASSWORD = os.environ.get("APP_PASSWORD", "1234")
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "12345")
 
 devices = []
 
