@@ -1,9 +1,15 @@
-from flask import Flask, request, jsonify, render_template_string, Response
+from flask import Flask, request, jsonify, render_template_string, Response, redirect, session
 from datetime import datetime
 import json
 import os
+from functools import wraps
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "change-this-secret-key-later")
+
+# Hardcoded password as requested — change this later via env var APP_PASSWORD
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "1234")
+
 devices = []
 
 @app.after_request
@@ -12,6 +18,102 @@ def after_request(response):
     response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
     response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
     return response
+
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+LOGIN_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Login</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: Arial, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .login-box {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 35px 30px;
+            width: 320px;
+            text-align: center;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+        }
+        h1 { color: #00d4ff; font-size: 20px; margin-bottom: 20px; }
+        input {
+            width: 100%;
+            padding: 10px 12px;
+            border-radius: 6px;
+            border: 1px solid #333;
+            background: #0d1117;
+            color: #eee;
+            font-size: 14px;
+            margin-bottom: 15px;
+        }
+        button {
+            width: 100%;
+            padding: 10px;
+            border: none;
+            border-radius: 6px;
+            background: #00d4ff;
+            color: #000;
+            font-weight: bold;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        button:hover { background: #00b8e0; }
+        .error { color: #ff6b6b; font-size: 12px; margin-bottom: 12px; }
+    </style>
+</head>
+<body>
+    <div class="login-box">
+        <h1>&#128274; Restricted Access</h1>
+        {% if error %}<div class="error">{{ error }}</div>{% endif %}
+        <form method="POST">
+            <input type="password" name="password" placeholder="Password" autofocus required>
+            <button type="submit">Enter</button>
+        </form>
+    </div>
+</body>
+</html>
+"""
+
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("authed"):
+            return redirect("/login")
+        return f(*args, **kwargs)
+    return decorated
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    error = None
+    if request.method == 'POST':
+        if request.form.get('password') == APP_PASSWORD:
+            session['authed'] = True
+            session.permanent = True
+            return redirect('/')
+        error = "Incorrect password"
+    return render_template_string(LOGIN_HTML, error=error)
+
+
+@app.route('/logout')
+def logout():
+    session.pop('authed', None)
+    return redirect('/login')
+
+
+# ── Dashboard HTML (unchanged) ────────────────────────────────────────────────
 
 DASHBOARD_HTML = """
 <!DOCTYPE html>
@@ -22,7 +124,9 @@ DASHBOARD_HTML = """
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: Arial, sans-serif; background: #1a1a2e; color: #eee; padding: 20px; }
-        h1 { color: #00d4ff; margin-bottom: 20px; }
+        h1 { color: #00d4ff; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
+        .logout-link { font-size: 13px; color: #ff6b6b; text-decoration: none; border: 1px solid #ff6b6b55; padding: 6px 12px; border-radius: 6px; }
+        .logout-link:hover { background: #ff6b6b22; }
         .stats { display: flex; gap: 15px; margin-bottom: 25px; flex-wrap: wrap; }
         .stat-card { background: #16213e; border-radius: 10px; padding: 15px 25px; text-align: center; min-width: 120px; }
         .stat-card .number { font-size: 28px; font-weight: bold; color: #00d4ff; }
@@ -69,7 +173,10 @@ DASHBOARD_HTML = """
     </style>
 </head>
 <body>
-    <h1>&#128225; Device Registration Dashboard</h1>
+    <h1>
+        <span>&#128225; Device Registration Dashboard</span>
+        <a class="logout-link" href="/logout">&#128274; Logout</a>
+    </h1>
 
     <div class="stats">
         <div class="stat-card">
@@ -172,7 +279,6 @@ DASHBOARD_HTML = """
             var hw = d.hardware || {};
             var html = '<table class="modal-table">';
 
-            // System
             html += '<tr><td colspan="2" class="section-header">&#128421; SYSTEM</td></tr>';
             html += '<tr><td>Hostname</td><td>'      + val(d.hostname)             + '</td></tr>';
             html += '<tr><td>OS</td><td>'            + val(hw.os)                  + '</td></tr>';
@@ -181,7 +287,6 @@ DASHBOARD_HTML = """
             html += '<tr><td>System Serial</td><td>' + val(hw.system_serial)       + '</td></tr>';
             html += '<tr><td>System UUID</td><td>'   + val(hw.system_uuid)         + '</td></tr>';
 
-            // Network Summary
             html += '<tr><td colspan="2" class="section-header">&#127760; NETWORK SUMMARY</td></tr>';
             html += '<tr><td>WiFi MAC</td><td>'      + val(hw.wifi_mac)      + '</td></tr>';
             html += '<tr><td>LAN MAC</td><td>'       + val(hw.lan_mac)       + '</td></tr>';
@@ -190,7 +295,6 @@ DASHBOARD_HTML = """
             html += '<tr><td>Public IP</td><td>'     + val(hw.public_ip)     + '</td></tr>';
             html += '</table>';
 
-            // All Adapters
             html += '<div style="margin-top:10px">';
             html += '<div class="section-header" style="margin-bottom:8px">&#128225; ALL NETWORK ADAPTERS</div>';
             if (hw.all_adapters && hw.all_adapters.length > 0) {
@@ -213,7 +317,6 @@ DASHBOARD_HTML = """
             }
             html += '</div>';
 
-            // Bluetooth Adapters (from EXE/HTA only)
             if (hw.bluetooth_adapters && hw.bluetooth_adapters.length > 0) {
                 html += '<div style="margin-top:10px">';
                 html += '<div class="section-header" style="margin-bottom:8px">&#128246; BLUETOOTH ADAPTERS</div>';
@@ -230,47 +333,40 @@ DASHBOARD_HTML = """
 
             html += '<table class="modal-table" style="margin-top:10px">';
 
-            // CPU
             html += '<tr><td colspan="2" class="section-header">&#9881; CPU</td></tr>';
             html += '<tr><td>Name</td><td>'          + val(hw.cpu_name)    + '</td></tr>';
             html += '<tr><td>ID</td><td>'            + val(hw.cpu_id)      + '</td></tr>';
             html += '<tr><td>Cores/Threads</td><td>' + val(hw.cpu_cores)   + ' / ' + val(hw.cpu_threads) + '</td></tr>';
             html += '<tr><td>Speed</td><td>'         + val(hw.cpu_speed)   + ' MHz</td></tr>';
 
-            // Motherboard
             html += '<tr><td colspan="2" class="section-header">&#9638; MOTHERBOARD</td></tr>';
             html += '<tr><td>Manufacturer</td><td>'  + val(hw.board_manufacturer) + '</td></tr>';
             html += '<tr><td>Product</td><td>'       + val(hw.board_product)      + '</td></tr>';
             html += '<tr><td>Version</td><td>'       + val(hw.board_version)      + '</td></tr>';
             html += '<tr><td>Serial</td><td>'        + val(hw.board_serial)       + '</td></tr>';
 
-            // BIOS
             html += '<tr><td colspan="2" class="section-header">&#128190; BIOS</td></tr>';
             html += '<tr><td>Manufacturer</td><td>'  + val(hw.bios_manufacturer) + '</td></tr>';
             html += '<tr><td>Version</td><td>'       + val(hw.bios_version)      + '</td></tr>';
             html += '<tr><td>Serial</td><td>'        + val(hw.bios_serial)       + '</td></tr>';
             html += '<tr><td>Date</td><td>'          + val(hw.bios_date)         + '</td></tr>';
 
-            // Disk
             html += '<tr><td colspan="2" class="section-header">&#128191; DISK</td></tr>';
             html += '<tr><td>Model</td><td>'         + val(hw.disk_model)  + '</td></tr>';
             html += '<tr><td>Serial</td><td>'        + val(hw.disk_serial) + '</td></tr>';
             html += '<tr><td>Size</td><td>'          + val(hw.disk_size)   + ' GB</td></tr>';
 
-            // RAM
             html += '<tr><td colspan="2" class="section-header">&#129504; RAM</td></tr>';
             html += '<tr><td>Manufacturer</td><td>'  + val(hw.ram_manufacturer) + '</td></tr>';
             html += '<tr><td>Serial</td><td>'        + val(hw.ram_serial)       + '</td></tr>';
             html += '<tr><td>Speed</td><td>'         + val(hw.ram_speed)        + ' MHz</td></tr>';
             html += '<tr><td>Capacity</td><td>'      + val(hw.ram_capacity)     + ' GB</td></tr>';
 
-            // GPU
             html += '<tr><td colspan="2" class="section-header">&#127918; GPU</td></tr>';
             html += '<tr><td>Name</td><td>'          + val(hw.gpu_name)   + '</td></tr>';
             html += '<tr><td>Driver</td><td>'        + val(hw.gpu_driver) + '</td></tr>';
             html += '<tr><td>VRAM</td><td>'          + val(hw.gpu_ram)    + ' GB</td></tr>';
 
-            // Browser signals (shown only for browser registrations)
             if (hw.canvas_fp || hw.webgl_renderer || hw.audio_fp) {
                 html += '<tr><td colspan="2" class="section-header">&#127760; BROWSER SIGNALS</td></tr>';
                 html += '<tr><td>WebGL Renderer</td><td>' + val(hw.webgl_renderer)  + '</td></tr>';
@@ -286,7 +382,6 @@ DASHBOARD_HTML = """
                 html += '<tr><td>Referrer</td><td>'       + val(hw.referrer)        + '</td></tr>';
             }
 
-            // Security
             html += '<tr><td colspan="2" class="section-header">&#128272; SECURITY</td></tr>';
             html += '<tr><td>Fingerprint</td><td>'   + val(d.fingerprint) + '</td></tr>';
             html += '<tr><td>Duplicate</td><td>'     + (d.is_duplicate ? '&#9888;&#65039; YES - Same device registered before' : '&#9989; No') + '</td></tr>';
@@ -314,6 +409,8 @@ DASHBOARD_HTML = """
 
 @app.route('/register-device', methods=['POST', 'OPTIONS'])
 def register_device():
+    """Left open — this is the endpoint devices/scripts POST their data to.
+    Locking this behind login would break device registration."""
     if request.method == 'OPTIONS':
         return '', 200
 
@@ -347,6 +444,7 @@ def register_device():
 
 
 @app.route('/')
+@login_required
 def dashboard():
     duplicate_count = sum(1 for d in devices if d['is_duplicate'])
     fingerprints    = set(d['fingerprint'] for d in devices if d['fingerprint'] != 'N/A')
@@ -367,8 +465,9 @@ def dashboard():
 
 
 @app.route('/register')
+@login_required
 def serve_hta():
-    """Serves the .hta file for download — Windows opens it automatically."""
+    """Serves the .hta file for download — protected so only you can grab it."""
     hta_path = os.path.join(os.path.dirname(__file__), 'register.hta')
     if not os.path.exists(hta_path):
         return "register.hta not found on server", 404
@@ -383,6 +482,7 @@ def serve_hta():
 
 @app.route('/health')
 def health():
+    """Left open — Railway's health checker pings this and can't log in."""
     return jsonify({"status": "ok"}), 200
 
 
