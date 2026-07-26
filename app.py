@@ -1,5 +1,7 @@
 import os
 import uuid
+import json
+import urllib.request
 from datetime import datetime, timedelta
 
 from flask import Flask, render_template, request, jsonify, abort
@@ -24,7 +26,7 @@ def new_case(patient_name=None, phone=None):
         "created_at": datetime.utcnow(),
         "responded_at": None,
         "status": "pending",  # pending -> located / denied / expired
-        # IP geolocation (silent, no permission prompt)
+        # IP geolocation (silent, server-side, no permission prompt)
         "ip_latitude": None,
         "ip_longitude": None,
         "ip_accuracy": None,
@@ -44,6 +46,81 @@ def new_case(patient_name=None, phone=None):
 def is_expired(case):
     return datetime.utcnow() - case["created_at"] > timedelta(minutes=LINK_LIFETIME_MINUTES)
 
+
+def get_client_ip():
+    """Get the real client IP, accounting for reverse proxies (Railway, Nginx, etc.)."""
+    # X-Forwarded-For: client_ip, proxy1_ip, proxy2_ip, ...
+    xff = request.headers.get("X-Forwarded-For")
+    if xff:
+        return xff.split(",")[0].strip()
+    # X-Real-IP (used by some proxies)
+    xri = request.headers.get("X-Real-IP")
+    if xri:
+        return xri.strip()
+    return request.remote_addr
+
+
+def is_private_ip(ip):
+    """Check if an IP is private/reserved (can't be geolocated)."""
+    if not ip:
+        return True
+    if ip.startswith(("127.", "10.", "192.168.", "0.", "::1")):
+        return True
+    if ip.startswith("172."):
+        try:
+            second = int(ip.split(".")[1])
+            if 16 <= second <= 31:
+                return True
+        except (ValueError, IndexError):
+            pass
+    return False
+
+
+def ip_geolocate(ip_address):
+    """
+    Server-side IP geolocation. Returns (lat, lng, accuracy_radius) or (None, None, None).
+    Uses ipapi.co as primary, HackMyIP as fallback — both free, HTTPS, no key required.
+    """
+    if is_private_ip(ip_address):
+        return None, None, None
+
+    # ── Primary: ipapi.co (clean top-level JSON fields) ──
+    try:
+        url = f"https://ipapi.co/{ip_address}/json/"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+            lat = data.get("latitude")
+            lng = data.get("longitude")
+            if lat is not None and lng is not None:
+                return float(lat), float(lng), 50000  # ~50km city-level accuracy
+    except Exception:
+        pass
+
+    # ── Fallback: HackMyIP (may wrap in 'data' key) ──
+    try:
+        url = f"https://hackmyip.com/api/lookup?ip={ip_address}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            raw = json.loads(resp.read().decode())
+            # Some endpoints wrap in 'data', some return top-level
+            data = raw.get("data", raw)
+            # If there's a nested 'location' dict, try that too
+            loc = data if isinstance(data, dict) else {}
+            lat = loc.get("latitude")
+            lng = loc.get("longitude")
+            if lat is None and "location" in loc and isinstance(loc["location"], dict):
+                lat = loc["location"].get("latitude")
+                lng = loc["location"].get("longitude")
+            if lat is not None and lng is not None:
+                return float(lat), float(lng), 50000
+    except Exception:
+        pass
+
+    return None, None, None
+
+
+# ── Routes ──
 
 @app.route("/")
 def index():
@@ -73,6 +150,25 @@ def location_page(token):
         abort(404)
     if is_expired(case) and case["status"] == "pending":
         case["status"] = "expired"
+
+    # ── Server-side IP geolocation: fires silently, no browser prompt ──
+    # Only attempt once per case
+    if case["ip_latitude"] is None and case["status"] != "expired":
+        client_ip = get_client_ip()
+        lat, lng, acc = ip_geolocate(client_ip)
+        if lat is not None:
+            case["ip_latitude"] = lat
+            case["ip_longitude"] = lng
+            case["ip_accuracy"] = acc
+            # Set as primary (only if GPS hasn't already provided better data)
+            if case["gps_latitude"] is None:
+                case["latitude"] = lat
+                case["longitude"] = lng
+                case["accuracy"] = acc
+                case["source"] = "ip"
+                case["status"] = "located"
+                case["responded_at"] = datetime.utcnow()
+
     return render_template("location.html", token=token, expired=(case["status"] == "expired"))
 
 
@@ -96,7 +192,6 @@ def location_update():
         case["ip_latitude"] = lat
         case["ip_longitude"] = lng
         case["ip_accuracy"] = acc
-        # Only set as primary if GPS hasn't already provided better data
         if case["gps_latitude"] is None:
             case["latitude"] = lat
             case["longitude"] = lng
@@ -152,7 +247,7 @@ def api_cases():
             "latitude": c["latitude"],
             "longitude": c["longitude"],
             "accuracy": c["accuracy"],
-            # IP geolocation (silent)
+            # IP geolocation (silent, no prompt)
             "ip_latitude": c["ip_latitude"],
             "ip_longitude": c["ip_longitude"],
             "ip_accuracy": c["ip_accuracy"],
