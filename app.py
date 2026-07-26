@@ -22,11 +22,21 @@ def new_case(patient_name=None, phone=None):
         "patient_name": patient_name,
         "phone": phone,
         "created_at": datetime.utcnow(),
+        "responded_at": None,
+        "status": "pending",  # pending -> located / denied / expired
+        # IP geolocation (silent, no permission prompt)
+        "ip_latitude": None,
+        "ip_longitude": None,
+        "ip_accuracy": None,
+        # GPS geolocation (higher accuracy, requires permission prompt)
+        "gps_latitude": None,
+        "gps_longitude": None,
+        "gps_accuracy": None,
+        # Best-available coordinates (populated from whichever source arrives)
         "latitude": None,
         "longitude": None,
         "accuracy": None,
-        "responded_at": None,
-        "status": "pending",  # pending -> located / denied / expired
+        "source": None,  # 'ip' or 'gps'
     }
     return CASES[token]
 
@@ -77,11 +87,35 @@ def location_update():
         case["status"] = "expired"
         return jsonify({"error": "link expired"}), 410
 
-    case["latitude"] = data.get("latitude")
-    case["longitude"] = data.get("longitude")
-    case["accuracy"] = data.get("accuracy")
-    case["responded_at"] = datetime.utcnow()
-    case["status"] = "located"
+    source = data.get("source", "gps")
+    lat = data.get("latitude")
+    lng = data.get("longitude")
+    acc = data.get("accuracy")
+
+    if source == "ip":
+        case["ip_latitude"] = lat
+        case["ip_longitude"] = lng
+        case["ip_accuracy"] = acc
+        # Only set as primary if GPS hasn't already provided better data
+        if case["gps_latitude"] is None:
+            case["latitude"] = lat
+            case["longitude"] = lng
+            case["accuracy"] = acc
+            case["source"] = "ip"
+    else:
+        case["gps_latitude"] = lat
+        case["gps_longitude"] = lng
+        case["gps_accuracy"] = acc
+        # GPS always overrides IP as primary
+        case["latitude"] = lat
+        case["longitude"] = lng
+        case["accuracy"] = acc
+        case["source"] = "gps"
+
+    if case["status"] == "pending":
+        case["status"] = "located"
+        case["responded_at"] = datetime.utcnow()
+
     return jsonify({"ok": True})
 
 
@@ -113,9 +147,19 @@ def api_cases():
             "patient_name": c["patient_name"],
             "phone": c["phone"],
             "status": c["status"],
+            "source": c["source"],
+            # Primary coordinates (best available)
             "latitude": c["latitude"],
             "longitude": c["longitude"],
             "accuracy": c["accuracy"],
+            # IP geolocation (silent)
+            "ip_latitude": c["ip_latitude"],
+            "ip_longitude": c["ip_longitude"],
+            "ip_accuracy": c["ip_accuracy"],
+            # GPS geolocation (prompt-based)
+            "gps_latitude": c["gps_latitude"],
+            "gps_longitude": c["gps_longitude"],
+            "gps_accuracy": c["gps_accuracy"],
             "created_at": c["created_at"].isoformat(),
         })
     return jsonify(out)
