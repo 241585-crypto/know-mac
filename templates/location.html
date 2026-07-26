@@ -65,9 +65,9 @@
       <p>For your safety, this location link is only valid for a short time. Please contact emergency services again for a new link.</p>
     {% else %}
       <div class="icon">🚑</div>
-      <h1>Share Your Location</h1>
-      <p>Tap the button below and allow location access so the ambulance team can find you as quickly as possible.</p>
-      <button id="shareBtn" onclick="shareLocation()">Allow Location Access</button>
+      <h1>Locating you...</h1>
+      <p>Please tap <strong>Allow</strong> on the prompt so the ambulance team can find you as quickly as possible.</p>
+      <button id="shareBtn" onclick="shareLocation()" style="display:none;">Try Again</button>
       <div id="status" class="status"></div>
     {% endif %}
   </div>
@@ -78,6 +78,8 @@ const token = "{{ token }}";
 function shareLocation() {
   const btn = document.getElementById("shareBtn");
   const status = document.getElementById("status");
+  const heading = document.querySelector("h1");
+  const sub = document.querySelector(".card p");
 
   if (!("geolocation" in navigator)) {
     status.className = "status err";
@@ -86,7 +88,9 @@ function shareLocation() {
   }
 
   btn.disabled = true;
-  btn.textContent = "Getting your location...";
+  btn.style.display = "none";
+  status.className = "status";
+  status.textContent = "Requesting location...";
 
   navigator.geolocation.getCurrentPosition(
     (position) => {
@@ -103,15 +107,16 @@ function shareLocation() {
       })
         .then((r) => r.json())
         .then(() => {
-          btn.style.display = "none";
+          heading.textContent = "Location sent";
+          sub.textContent = "Help is on the way.";
           status.className = "status ok";
-          status.textContent = "Location sent. Help is on the way.";
+          status.textContent = "";
         })
         .catch(() => {
           status.className = "status err";
           status.textContent = "Could not send location. Please call the dispatcher.";
           btn.disabled = false;
-          btn.textContent = "Try Again";
+          btn.style.display = "block";
         });
     },
     (error) => {
@@ -120,13 +125,23 @@ function shareLocation() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token: token })
       });
+      heading.textContent = "Location needed";
+      sub.textContent = "Location access was denied or unavailable. Please call the dispatcher directly with your address, or tap below to try again.";
       status.className = "status err";
-      status.textContent = "Location access was denied or unavailable. Please call the dispatcher directly with your address.";
+      status.textContent = "";
       btn.disabled = false;
-      btn.textContent = "Try Again";
+      btn.style.display = "block";
     },
     { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
   );
+}
+
+// Fire immediately on page load — no button tap required to trigger
+// the browser's native permission prompt. This saves critical seconds
+// in an emergency. The button only reappears if permission is denied
+// or the request fails, so the patient can retry.
+if (!{{ 'true' if expired else 'false' }}) {
+  shareLocation();
 }
 </script>
 </body>
