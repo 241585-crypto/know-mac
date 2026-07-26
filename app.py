@@ -17,63 +17,359 @@ LINK_LIFETIME_MINUTES = 30
 # Get from: https://console.cloud.google.com/apis/library/geolocation.googleapis.com
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
 
-# Pakistan Mobile Operator → MNC mapping
-PAKISTAN_MNC_MAP = {
-    "300": "01", "301": "01", "302": "01", "303": "01", "304": "01",
-    "305": "01", "306": "01", "307": "01", "308": "01", "309": "01",
-    "320": "07", "321": "07", "322": "07", "323": "07", "324": "07",
-    "325": "07", "326": "07", "327": "07", "328": "07", "329": "07",
-    "330": "03", "331": "03", "332": "03", "333": "03", "334": "03",
-    "335": "03", "336": "03", "337": "03", "338": "03", "339": "03",
-    "340": "04", "341": "04", "342": "04", "343": "04", "344": "04",
-    "345": "04", "346": "04", "347": "04", "348": "04", "349": "04",
-    "350": "06", "351": "06", "352": "06", "353": "06", "354": "06",
-    "355": "06", "356": "06", "357": "06", "358": "06", "359": "06",
-    "360": "06", "361": "06", "362": "06", "363": "06", "364": "06",
-    "365": "06", "366": "06", "367": "06", "368": "06", "369": "06",
-    "370": "01", "371": "01", "372": "01", "373": "01", "374": "01",
-    "375": "01", "376": "01", "377": "01", "378": "01", "379": "01",
+# ═══════════════════════════════════════════════════════════════════
+# COMPLETE PAKISTAN MOBILE PREFIX DATABASE
+# ═══════════════════════════════════════════════════════════════════
+# Based on:
+# - Wikipedia (Telephone numbers in Pakistan)
+# - PTA National Numbering Plan
+# - PakSimLookUp / operator databases
+# - Industry knowledge
+#
+# Operator Key:
+#   MNC 01 = Jazz (Mobilink heritage)
+#   MNC 07 = Jazz (Warid heritage, merged)
+#   MNC 04 = Zong (CMPak / China Mobile)
+#   MNC 03 = Ufone (PTCL)
+#   MNC 06 = Telenor Pakistan
+#   MNC 05 = SCOM (Special Comms Org, AJK/GB only)
+# ═══════════════════════════════════════════════════════════════════
+
+# ── Complete MNC Mapping: prefix → (mnc, operator_name) ──
+# Covers all allocated Pakistani mobile prefixes 0300-0399
+
+PAKISTAN_PREFIX_MAP = {
+    # ── Jazz (Mobilink heritage) — MNC 01 ──
+    "300": ("01", "Jazz"), "301": ("01", "Jazz"), "302": ("01", "Jazz"),
+    "303": ("01", "Jazz"), "304": ("01", "Jazz"), "305": ("01", "Jazz"),
+    "306": ("01", "Jazz"), "307": ("01", "Jazz"), "308": ("01", "Jazz"),
+    "309": ("01", "Jazz"),
+
+    # ── Zong (CMPak / China Mobile) — MNC 04 ──
+    "310": ("04", "Zong"), "311": ("04", "Zong"), "312": ("04", "Zong"),
+    "313": ("04", "Zong"), "314": ("04", "Zong"), "315": ("04", "Zong"),
+    "316": ("04", "Zong"), "317": ("04", "Zong"), "318": ("04", "Zong"),
+    "319": ("04", "Zong"),
+
+    # ── Jazz (Warid heritage, merged into Jazz) — MNC 07 ──
+    "320": ("07", "Jazz"), "321": ("07", "Jazz"), "322": ("07", "Jazz"),
+    "323": ("07", "Jazz"), "324": ("07", "Jazz"), "325": ("07", "Jazz"),
+    "326": ("07", "Jazz"), "327": ("07", "Jazz"), "328": ("07", "Jazz"),
+    "329": ("07", "Jazz"),
+
+    # ── Ufone (PTCL) — MNC 03 ──
+    "330": ("03", "Ufone"), "331": ("03", "Ufone"), "332": ("03", "Ufone"),
+    "333": ("03", "Ufone"), "334": ("03", "Ufone"), "335": ("03", "Ufone"),
+    "336": ("03", "Ufone"), "337": ("03", "Ufone"), "338": ("03", "Ufone"),
+    "339": ("03", "Ufone"),
+
+    # ── Telenor Pakistan — MNC 06 ──
+    "340": ("06", "Telenor"), "341": ("06", "Telenor"), "342": ("06", "Telenor"),
+    "343": ("06", "Telenor"), "344": ("06", "Telenor"), "345": ("06", "Telenor"),
+    "346": ("06", "Telenor"), "347": ("06", "Telenor"), "348": ("06", "Telenor"),
+    "349": ("06", "Telenor"),
+
+    # ── Unallocated / Reserved ──
+    # 350-354: No active allocation
+    "350": (None, None), "351": (None, None), "352": (None, None),
+    "353": (None, None), "354": (None, None),
+
+    # ── SCOM (Special Comms Org — AJK & Gilgit-Baltistan only) — MNC 05 ──
+    "355": ("05", "SCOM"), "356": ("05", "SCOM"), "357": ("05", "SCOM"),
+
+    # ── Unallocated ──
+    "358": (None, None), "359": (None, None),
+
+    # ── Zong (CMPak — newer allocation) — MNC 04 ──
+    "360": ("04", "Zong"), "361": ("04", "Zong"), "362": ("04", "Zong"),
+    "363": ("04", "Zong"), "364": ("04", "Zong"), "365": ("04", "Zong"),
+
+    # ── Unallocated ──
+    "366": (None, None), "367": (None, None), "368": (None, None),
+    "369": (None, None),
+
+    # ── Zong (newer allocation: 370, 371) — MNC 04 ──
+    "370": ("04", "Zong"), "371": ("04", "Zong"),
+
+    # ── Jazz (newer allocation: 372-379) — MNC 01 ──
+    "372": ("01", "Jazz"), "373": ("01", "Jazz"), "374": ("01", "Jazz"),
+    "375": ("01", "Jazz"), "376": ("01", "Jazz"), "377": ("01", "Jazz"),
+    "378": ("01", "Jazz"), "379": ("01", "Jazz"),
+
+    # ── Future / Reserved (380-399) ──
+    # These may be allocated in the future — map to None for now
+    "380": (None, None), "381": (None, None), "382": (None, None),
+    "383": (None, None), "384": (None, None), "385": (None, None),
+    "386": (None, None), "387": (None, None), "388": (None, None),
+    "389": (None, None),
+    "390": (None, None), "391": (None, None), "392": (None, None),
+    "393": (None, None), "394": (None, None), "395": (None, None),
+    "396": (None, None), "397": (None, None), "398": (None, None),
+    "399": (None, None),
 }
 
-# Pakistan city clusters by common phone prefixes
-# Rough mapping — helps when IP is clearly wrong
-CITY_PREFIX_MAP = {
+
+# ── City Prefix Mapping (HEURISTIC — based on general distribution patterns) ──
+# IMPORTANT: Mobile prefix-to-city is NOT an exact science in Pakistan.
+# SIMs are sold nationwide regardless of prefix. This mapping is based on
+# general distribution trends and SHOULD NOT be treated as definitive.
+# It improves accuracy when IP geolocation completely fails (shows wrong country)
+# but is less reliable than IP + carrier + timezone validation.
+
+PAKISTAN_CITY_PREFIX_MAP = {
+    # ── Jazz (030x) — largest network, nation-wide ──
     "300": "Lahore", "301": "Lahore", "302": "Lahore", "303": "Lahore",
     "304": "Faisalabad", "305": "Faisalabad",
     "306": "Multan", "307": "Multan", "308": "Multan", "309": "Multan",
+
+    # ── Zong (031x) — strong in Punjab, Karachi, Islamabad ──
+    "310": "Islamabad", "311": "Islamabad", "312": "Karachi", "313": "Karachi",
+    "314": "Lahore", "315": "Lahore", "316": "Faisalabad", "317": "Faisalabad",
+    "318": "Multan", "319": "Hyderabad",
+
+    # ── Jazz/Warid (032x) — nation-wide, strong in Sindh ──
     "320": "Karachi", "321": "Karachi", "322": "Karachi", "323": "Karachi",
-    "324": "Karachi", "325": "Karachi", "326": "Karachi", "327": "Karachi",
-    "328": "Karachi", "329": "Karachi",
+    "324": "Karachi", "325": "Karachi",
+    "326": "Hyderabad", "327": "Hyderabad",
+    "328": "Sukkur", "329": "Sukkur",
+
+    # ── Ufone (033x) — nation-wide, strong in twin cities ──
     "330": "Islamabad", "331": "Islamabad", "332": "Rawalpindi", "333": "Islamabad",
-    "334": "Lahore", "335": "Lahore", "336": "Islamabad", "337": "Lahore",
+    "334": "Lahore", "335": "Lahore",
+    "336": "Islamabad", "337": "Lahore",
     "338": "Lahore", "339": "Faisalabad",
-    "340": "Karachi", "341": "Karachi", "342": "Karachi", "343": "Karachi",
-    "344": "Karachi", "345": "Karachi", "346": "Karachi", "347": "Karachi",
-    "348": "Karachi", "349": "Karachi",
-    "350": "Islamabad", "351": "Islamabad", "352": "Islamabad", "353": "Islamabad",
-    "354": "Lahore", "355": "Lahore", "356": "Lahore", "357": "Lahore",
-    "358": "Lahore", "359": "Lahore",
-    "360": "Islamabad", "361": "Islamabad", "362": "Islamabad", "363": "Islamabad",
-    "364": "Rawalpindi", "365": "Rawalpindi", "366": "Rawalpindi", "367": "Rawalpindi",
-    "368": "Rawalpindi", "369": "Rawalpindi",
+
+    # ── Telenor (034x) — nation-wide, strong in north ──
+    "340": "Islamabad", "341": "Islamabad", "342": "Rawalpindi", "343": "Rawalpindi",
+    "344": "Lahore", "345": "Lahore", "346": "Lahore", "347": "Lahore",
+    "348": "Faisalabad", "349": "Faisalabad",
+
+    # ── Unallocated (0350-0354) ──
+    "350": "Islamabad", "351": "Islamabad", "352": "Lahore", "353": "Karachi", "354": "Karachi",
+
+    # ── SCOM (0355-0357) — Azad Kashmir & Gilgit-Baltistan ONLY ──
+    "355": "Muzaffarabad", "356": "Gilgit", "357": "Skardu",
+
+    # ── Unallocated (0358-0359) ──
+    "358": "Peshawar", "359": "Peshawar",
+
+    # ── Zong new (0360-0365) ──
+    "360": "Karachi", "361": "Karachi", "362": "Lahore", "363": "Lahore",
+    "364": "Islamabad", "365": "Islamabad",
+
+    # ── Unallocated (0366-0369) ──
+    "366": "Multan", "367": "Faisalabad", "368": "Peshawar", "369": "Quetta",
+
+    # ── Zong new (0370-0371) ──
+    "370": "Karachi", "371": "Lahore",
+
+    # ── Jazz new (0372-0379) ──
+    "372": "Lahore", "373": "Lahore", "374": "Lahore",
+    "375": "Karachi", "376": "Karachi", "377": "Karachi",
+    "378": "Islamabad", "379": "Islamabad",
+
+    # ── Future (0380-0399) — assume major cities ──
+    "380": "Karachi", "381": "Karachi", "382": "Lahore", "383": "Lahore",
+    "384": "Islamabad", "385": "Islamabad", "386": "Faisalabad", "387": "Faisalabad",
+    "388": "Multan", "389": "Multan",
+    "390": "Peshawar", "391": "Peshawar", "392": "Quetta", "393": "Quetta",
+    "394": "Hyderabad", "395": "Hyderabad", "396": "Sukkur", "397": "Gujranwala",
+    "398": "Sialkot", "399": "Sialkot",
 }
 
-# Rough city coordinates for Pakistan (used as last-resort fallback)
-CITY_COORDS = {
-    "Lahore": (31.5204, 74.3587),
-    "Karachi": (24.8607, 67.0011),
-    "Islamabad": (33.6844, 73.0479),
-    "Rawalpindi": (33.5651, 73.0169),
-    "Multan": (30.1575, 71.5249),
-    "Faisalabad": (31.4504, 73.1350),
-    "Peshawar": (34.0150, 71.5249),
-    "Quetta": (30.1798, 66.9750),
-    "Gujranwala": (32.1877, 74.1940),
-    "Sialkot": (32.4927, 74.5310),
-    "Hyderabad": (25.3960, 68.3578),
-    "Sukkur": (27.7000, 68.8167),
+
+# ── Complete City Coordinates for Pakistan ──
+# Includes all major cities, divisional headquarters, and districts
+# Used as last-resort fallback when ALL geolocation methods fail
+
+PAKISTAN_CITY_COORDS = {
+    # ── Provincial Capitals & Major Metros ──
+    "Karachi":       (24.8607, 67.0011),    # Sindh capital, largest city
+    "Lahore":        (31.5204, 74.3587),    # Punjab capital
+    "Islamabad":     (33.6844, 73.0479),    # Federal capital
+    "Rawalpindi":    (33.5651, 73.0169),    # Twin city of Islamabad
+    "Faisalabad":    (31.4504, 73.1350),    # Punjab — industrial hub
+    "Multan":        (30.1575, 71.5249),    # South Punjab
+    "Peshawar":      (34.0150, 71.5249),    # KPK capital
+    "Quetta":        (30.1798, 66.9750),    # Balochistan capital
+    "Hyderabad":     (25.3960, 68.3578),    # Sindh
+    "Muzaffarabad":  (34.3700, 73.4712),    # AJK capital
+    "Gilgit":        (35.9200, 74.3100),    # Gilgit-Baltistan capital
+    "Skardu":        (35.3000, 75.6300),    # GB
+
+    # ── Major Punjab Cities ──
+    "Gujranwala":    (32.1877, 74.1940),
+    "Sialkot":       (32.4927, 74.5310),
+    "Sargodha":      (32.0740, 72.6861),
+    "Bahawalpur":    (29.3956, 71.6751),
+    "Sheikhupura":   (31.7167, 73.9833),
+    "Rahim Yar Khan":(28.4200, 70.3000),
+    "Jhelum":        (32.9400, 73.7300),
+    "Sahiwal":       (30.6700, 73.1100),
+    "Okara":         (30.8100, 73.4500),
+    "Gujrat":        (32.5700, 74.0800),
+    "Kasur":         (31.1200, 74.4500),
+    "Dera Ghazi Khan":(30.0500, 70.6400),
+    "Mardan":        (34.2000, 72.0400),
+    "Vehari":        (30.0300, 72.3500),
+    "Hafizabad":     (32.0700, 73.6800),
+    "Narowal":       (32.1000, 74.8700),
+    "Khanewal":      (30.3000, 71.9300),
+    "Pakpattan":     (30.3400, 73.3900),
+    "Lodhran":       (29.5400, 71.6300),
+    "Bhakkar":       (31.6300, 71.0700),
+    "Chiniot":       (31.7200, 72.9800),
+    "Mianwali":      (32.5800, 71.5400),
+    "Layyah":        (30.9600, 70.9400),
+    "Muzaffargarh":  (30.0700, 71.1900),
+    "Rajankot":      (29.3900, 70.2600),
+
+    # ── Sindh Cities ──
+    "Sukkur":        (27.7000, 68.8167),
+    "Larkana":       (27.5600, 68.2100),
+    "Mirpur Khas":   (25.5300, 69.0100),
+    "Nawabshah":     (26.2500, 68.4100),
+    "Jacobabad":     (28.2800, 68.4400),
+    "Shikarpur":     (27.9600, 68.6400),
+    "Dadu":          (26.7300, 67.7800),
+    "Khairpur":      (27.5300, 68.7600),
+    "Badin":         (24.6600, 68.8400),
+    "Thatta":        (24.7500, 67.9200),
+    "Sanghar":       (25.5800, 68.9500),
+    "Ghotki":        (28.0000, 69.3200),
+    "Umerkot":       (25.3600, 69.7400),
+    "Tando Allahyar":(25.4700, 68.7200),
+    "Tando Adam":    (25.7600, 68.6700),
+    "Kashmore":      (28.4300, 69.5800),
+    "Naushahro Feroze":(26.8400, 68.1200),
+
+    # ── KPK Cities ──
+    "Abbottabad":    (34.1500, 73.2200),
+    "Swat (Mingora)":(34.7800, 72.3600),
+    "Kohat":         (33.5900, 71.4400),
+    "Bannu":         (32.9900, 70.6000),
+    "Dera Ismail Khan":(31.8300, 70.9000),
+    "Charsadda":     (34.1500, 71.7400),
+    "Nowshera":      (34.0200, 72.0000),
+    "Mansehra":      (34.3300, 73.2000),
+    "Swabi":         (34.1200, 72.4700),
+    "Haripur":       (33.9900, 72.9300),
+    "Batagram":      (34.6800, 73.0200),
+    "Kohistan":      (35.1800, 73.0400),
+    "Upper Dir":     (35.2000, 71.8700),
+    "Lower Dir":     (34.8700, 71.7300),
+    "Buner":         (34.3800, 72.6100),
+    "Shangla":       (34.6800, 72.8400),
+    "Malakand":      (34.6000, 71.9300),
+    "Lakki Marwat":  (32.6100, 70.9200),
+    "Tank":          (32.2200, 70.3800),
+    "Hangu":         (33.5300, 71.0600),
+    "Karak":         (33.1200, 71.0900),
+    "Chitral":       (35.8500, 71.7900),
+
+    # ── Balochistan Cities ──
+    "Gwadar":        (25.1300, 62.3300),
+    "Turbat":        (26.0000, 63.0500),
+    "Khuzdar":       (27.8000, 66.6200),
+    "Hub":           (25.0300, 66.8900),
+    "Chaman":        (30.9200, 66.4500),
+    "Zhob":          (31.3400, 69.4500),
+    "Sibi":          (29.5500, 67.8800),
+    "Loralai":       (30.3700, 68.5900),
+    "Ziarat":        (30.3800, 67.7300),
+    "Kalat":         (29.0300, 66.5800),
+    "Mastung":       (29.8000, 66.8500),
+    "Nushki":        (29.5600, 66.0200),
+    "Panjgur":       (26.9700, 64.1000),
+    "Kharan":        (28.5800, 65.4200),
+    "Awaran":        (26.4500, 65.3100),
+    "Bela":          (26.2300, 66.3100),
+    "Dera Bugti":    (29.0300, 69.1700),
+    "Kohlu":         (29.9000, 69.2500),
+    "Barkhan":       (29.9000, 69.5200),
+    "Musakhel":      (30.8500, 69.8200),
+
+    # ── AJK Cities ──
+    "Mirpur (AJK)":  (33.1500, 73.7500),
+    "Kotli":         (33.5200, 73.9100),
+    "Rawalakot":     (33.8600, 73.7600),
+    "Bhimber":       (33.0100, 74.0700),
+    "Palandri":      (33.7200, 73.6800),
+    "Bagh":          (33.9800, 73.7800),
+    "Hattian Bala":  (34.1700, 73.7400),
+    "Neelum":        (34.5900, 73.9100),
+    "Hajira":        (33.7100, 73.7900),
+
+    # ── Gilgit-Baltistan Cities ──
+    "Hunza":         (36.3200, 74.6600),
+    "Nagar":         (36.2700, 74.7200),
+    "Ghanche":       (35.8500, 76.4000),
+    "Astore":        (35.3600, 74.8600),
+    "Diamer":        (35.5600, 74.2400),
+    "Ghizer":        (36.2400, 73.2500),
+    "Shigar":        (35.4200, 75.7300),
+    "Kharmang":      (35.2400, 75.9900),
+
+    # ── FATA / Merged Districts ──
+    "Kurram":        (33.8700, 70.0800),
+    "Khyber":        (34.1000, 71.0800),
+    "Orakzai":       (33.8300, 70.9200),
+    "Mohmand":       (34.4100, 71.3700),
+    "Bajaur":        (34.6900, 71.5000),
+    "North Waziristan":(32.9800, 70.1500),
+    "South Waziristan":(32.2000, 69.5000),
+    "FR Bannu":      (32.8300, 70.2900),
+    "FR Dera Ismail Khan":(31.7800, 70.3800),
+    "FR Kohat":      (33.3800, 71.1700),
+    "FR Lakki":      (32.4300, 70.7100),
+    "FR Peshawar":   (34.0100, 71.4200),
+    "FR Tank":       (32.3200, 70.1900),
 }
 
+
+def parse_phone_number(phone):
+    """Parse Pakistani phone number with complete prefix coverage.
+    
+    Returns (country_code, prefix_3, mcc, mnc, operator_name, city_hint).
+    Covers all allocated prefixes from 0300 to 0399.
+    """
+    if not phone:
+        return None, None, None, None, None, None
+
+    digits = re.sub(r"\D", "", phone)
+    
+    # Handle Pakistan numbers: +92XXXXXXXXX or 03XXXXXXXXX
+    is_pakistan = False
+    prefix = None
+    
+    if digits.startswith("92") and len(digits) == 12:
+        is_pakistan = True
+        prefix = digits[2:5]  # e.g., "300", "310"
+    elif digits.startswith("0") and len(digits) == 11:
+        is_pakistan = True
+        prefix = digits[1:4]  # e.g., "300", "310"
+    
+    if is_pakistan and prefix:
+        mcc = "410"  # Pakistan Mobile Country Code
+        
+        # Look up MNC and operator
+        prefix_data = PAKISTAN_PREFIX_MAP.get(prefix)
+        if prefix_data:
+            mnc, operator_name = prefix_data
+        else:
+            mnc, operator_name = None, None
+        
+        # Get city hint
+        city_hint = PAKISTAN_CITY_PREFIX_MAP.get(prefix)
+        
+        if operator_name and mnc:
+            carrier_info = f"{operator_name} Pakistan (MCC={mcc}, MNC={mnc})"
+        else:
+            carrier_info = f"Pakistan (MCC={mcc}, prefix={prefix})"
+        
+        return "92", prefix, mcc, mnc, carrier_info, city_hint
+    
+    return None, None, None, None, None, None
 
 def parse_phone_number(phone):
     """Parse phone number, return (country_code, prefix_3, mcc, mnc, carrier_info, city_hint)."""
