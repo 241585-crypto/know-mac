@@ -5,23 +5,16 @@ import json
 import urllib.request
 from datetime import datetime, timedelta
 
-from flask import Flask, render_template, request, jsonify, abort
+from flask import Flask, render_template, request, jsonify, abort, make_response
 
 app = Flask(__name__)
 
 # ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
 CASES = {}
 LINK_LIFETIME_MINUTES = 30
-
-# Google Geolocation API key (optional but recommended)
-# Get one: https://developers.google.com/maps/documentation/geolocation
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
 
-# ── Pakistan Mobile Operator → MNC mapping ──
-# MCC for Pakistan is always 410
-# Phone prefixes → MNC (Mobile Network Code)
+# Pakistan Mobile Operator → MNC mapping
 PAKISTAN_MNC_MAP = {
     "300": "01", "301": "01", "302": "01", "303": "01", "304": "01",
     "305": "01", "306": "01", "307": "01", "308": "01", "309": "01",
@@ -41,51 +34,25 @@ PAKISTAN_MNC_MAP = {
 
 
 def parse_phone_to_mcc_mnc(phone):
-    """Derive MCC and MNC from a phone number.
-    
-    Returns (mcc, mnc, carrier_name) or (None, None, None).
-    For Pakistan (country code +92).
-    """
     if not phone:
         return None, None, None
-
-    # Strip everything except digits
     digits = re.sub(r"\D", "", phone)
-
-    # Handle Pakistan numbers: +92XXXXXXXXX or 03XXXXXXXXX
     if digits.startswith("92") and len(digits) == 12:
-        mcc = "410"  # Pakistan
-        # Prefix is digits[2:5] (after 92)
+        mcc = "410"
         prefix = digits[2:5]
         mnc = PAKISTAN_MNC_MAP.get(prefix)
-        return mcc, mnc, f"Pakistan (MCC={mcc}, MNC={mnc})"
+        return mcc, mnc, f"Pakistan carrier (MCC={mcc}, MNC={mnc})"
     elif digits.startswith("0") and len(digits) == 11:
         mcc = "410"
         prefix = digits[1:4]
         mnc = PAKISTAN_MNC_MAP.get(prefix)
-        return mcc, mnc, f"Pakistan (MCC={mcc}, MNC={mnc})"
-
-    # For other countries, we can try to extract country code
-    # First digit after country code gives general area
-    # For non-Pakistan numbers, we'd need a more comprehensive mapping
-    # For now, just extract the country code
+        return mcc, mnc, f"Pakistan carrier (MCC={mcc}, MNC={mnc})"
     return None, None, None
 
 
-def get_radio_type(mnc):
-    """Determine radio type based on operator. In Pakistan, all major
-    operators use LTE (4G) extensively. Default to 'lte'."""
-    return "lte"
-
-
-# ── Case management ──
-
 def new_case(patient_name=None, phone=None):
     token = uuid.uuid4().hex[:12]
-    
-    # Derive carrier info from phone number
     mcc, mnc, carrier_info = parse_phone_to_mcc_mnc(phone)
-    
     CASES[token] = {
         "token": token,
         "patient_name": patient_name,
@@ -102,7 +69,6 @@ def new_case(patient_name=None, phone=None):
         "longitude": None,
         "accuracy": None,
         "source": None,
-        "connection_type": None,  # 'wifi', 'cellular', etc.
     }
     return CASES[token]
 
@@ -136,12 +102,11 @@ def is_private_ip(ip):
     return False
 
 
-# ── IP Geolocation: Multi-API Chain ──
+# ── IP Geolocation Providers ──
 
 def ip_geolocate_ipapi(ip_address):
-    """ip-api.com - best free accuracy, no HTTPS on free tier."""
     try:
-        url = f"http://ip-api.com/json/{ip_address}?fields=lat,lon,accuracy,status,city,regionName,country"
+        url = f"http://ip-api.com/json/{ip_address}?fields=lat,lon,accuracy,status"
         with urllib.request.urlopen(url, timeout=4) as resp:
             data = json.loads(resp.read().decode())
             if data.get("status") == "success":
@@ -156,7 +121,6 @@ def ip_geolocate_ipapi(ip_address):
 
 
 def ip_geolocate_ipapi_co(ip_address):
-    """ipapi.co - HTTPS, free tier."""
     try:
         url = f"https://ipapi.co/{ip_address}/json/"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -172,7 +136,6 @@ def ip_geolocate_ipapi_co(ip_address):
 
 
 def ip_geolocate_ipinfo(ip_address):
-    """ipinfo.io - good accuracy, free tier 50k/month."""
     try:
         token = os.environ.get("IPINFO_TOKEN", "")
         if token:
@@ -193,33 +156,21 @@ def ip_geolocate_ipinfo(ip_address):
 
 
 def ip_geolocate_google(ip_address, mcc=None, mnc=None):
-    """Google Geolocation API - best mobile carrier accuracy.
-    
-    When MCC/MNC is provided, Google can use carrier IP range data
-    for much better accuracy on mobile networks (100-1000m).
-    """
     if not GOOGLE_API_KEY:
         return None, None, None
-
     try:
-        payload = {
-            "considerIp": True,
-            "homeMobileCountryCode": mcc if mcc else None,
-            "homeMobileNetworkCode": mnc if mnc else None,
-            "radioType": "lte",
-        }
-        # Remove None values
-        payload = {k: v for k, v in payload.items() if v is not None}
+        payload = {"considerIp": True}
+        if mcc:
+            payload["homeMobileCountryCode"] = int(mcc)
+        if mnc:
+            payload["homeMobileNetworkCode"] = int(mnc)
+        payload["radioType"] = "lte"
 
         url = f"https://www.googleapis.com/geolocation/v1/geolocate?key={GOOGLE_API_KEY}"
         data = json.dumps(payload).encode()
         req = urllib.request.Request(
-            url,
-            data=data,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0",
-            },
+            url, data=data,
+            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
             result = json.loads(resp.read().decode())
@@ -228,42 +179,29 @@ def ip_geolocate_google(ip_address, mcc=None, mnc=None):
             acc = result.get("accuracy", 50000)
             if lat is not None and lng is not None:
                 return float(lat), float(lng), float(acc)
-    except Exception as e:
+    except Exception:
         pass
     return None, None, None
 
 
 def ip_geolocate(ip_address, mcc=None, mnc=None):
-    """Multi-API IP geolocation chain with weighted voting.
-    
-    Returns (lat, lng, accuracy_meters, source_provider) tuple.
-    Uses:
-    1. Google Geolocation API (best on mobile with carrier data)
-    2. ip-api.com (best free city-level)
-    3. ipapi.co (HTTPS fallback)
-    4. ipinfo.io (good coverage)
-    """
     if is_private_ip(ip_address):
         return None, None, None, None
 
     results = []
 
-    # 1. Google (with carrier data for mobile accuracy boost)
     glat, glng, gacc = ip_geolocate_google(ip_address, mcc, mnc)
     if glat is not None:
         results.append((glat, glng, gacc, "google"))
 
-    # 2. ip-api.com
     iplat, iplng, ipacc = ip_geolocate_ipapi(ip_address)
     if iplat is not None:
         results.append((iplat, iplng, ipacc, "ip-api"))
 
-    # 3. ipapi.co
     icolat, icolng, icoacc = ip_geolocate_ipapi_co(ip_address)
     if icolat is not None:
         results.append((icolat, icolng, icoacc, "ipapi.co"))
 
-    # 4. ipinfo.io
     infolat, infolng, infoacc = ip_geolocate_ipinfo(ip_address)
     if infolat is not None:
         results.append((infolat, infolng, infoacc, "ipinfo"))
@@ -271,50 +209,32 @@ def ip_geolocate(ip_address, mcc=None, mnc=None):
     if not results:
         return None, None, None, None
 
-    # ── Weighted voting ──
-    # Google gets highest weight (best accuracy, especially with carrier data)
-    # Weight inversely proportional to reported accuracy radius
-    weights = {
-        "google": 3.0,
-        "ip-api": 1.5,
-        "ipapi.co": 1.0,
-        "ipinfo": 1.0,
-    }
-
+    weights = {"google": 3.0, "ip-api": 1.5, "ipapi.co": 1.0, "ipinfo": 1.0}
     total_weight = 0
     lat_sum = 0.0
     lng_sum = 0.0
-    acc_sum = 0.0
 
     for lat, lng, acc, provider in results:
         w = weights.get(provider, 1.0)
-        # Accuracy weight: tighter accuracy = higher weight
         accuracy_factor = max(0.1, 1.0 / (acc / 10000.0 + 1.0))
         effective_weight = w * accuracy_factor
         total_weight += effective_weight
         lat_sum += lat * effective_weight
         lng_sum += lng * effective_weight
-        acc_sum += acc * effective_weight
 
     if total_weight == 0:
         return None, None, None, None
 
     avg_lat = lat_sum / total_weight
     avg_lng = lng_sum / total_weight
-    avg_acc = acc_sum / total_weight
-
-    # Pick the best provider name (highest weighted)
+    avg_acc = min(r[2] for r in results)
     best_provider = max(results, key=lambda r: weights.get(r[3], 1.0))[3]
 
     return avg_lat, avg_lng, avg_acc, best_provider
 
 
-def record_visit(case, ip_address, connection_type=None, gps_data=None):
-    """Record a visit with multi-API IP geolocation + optional GPS."""
+def record_visit(case, ip_address, gps_data=None):
     case["visit_count"] += 1
-    case["connection_type"] = connection_type
-
-    # IP geolocation with carrier-aware Google API boost
     mcc = case.get("mcc")
     mnc = case.get("mnc")
     ip_lat, ip_lng, ip_acc, ip_source = ip_geolocate(ip_address, mcc, mnc)
@@ -326,7 +246,6 @@ def record_visit(case, ip_address, connection_type=None, gps_data=None):
         "ip_longitude": ip_lng,
         "ip_accuracy": ip_acc,
         "ip_source": ip_source,
-        "connection_type": connection_type,
         "gps_latitude": None,
         "gps_longitude": None,
         "gps_accuracy": None,
@@ -336,7 +255,6 @@ def record_visit(case, ip_address, connection_type=None, gps_data=None):
         "accuracy": ip_acc,
     }
 
-    # GPS overrides if provided
     if gps_data:
         visit["gps_latitude"] = gps_data.get("latitude")
         visit["gps_longitude"] = gps_data.get("longitude")
@@ -348,8 +266,6 @@ def record_visit(case, ip_address, connection_type=None, gps_data=None):
             visit["source"] = "gps"
 
     case["visits"].append(visit)
-
-    # Update case-level best coordinates to latest
     case["latitude"] = visit["latitude"]
     case["longitude"] = visit["longitude"]
     case["accuracy"] = visit["accuracy"]
@@ -369,6 +285,17 @@ def index():
     return "Ambulance Locator v3 — POST /create to generate a link."
 
 
+@app.route("/sw.js")
+def service_worker():
+    """Serve the Service Worker with correct MIME type."""
+    response = make_response(render_template("sw.js"))
+    response.headers["Content-Type"] = "application/javascript"
+    response.headers["Service-Worker-Allowed"] = "/"
+    # Cache control: SW must be fresh or browser won't update it
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return response
+
+
 @app.route("/create", methods=["POST"])
 def create_case():
     data = request.get_json(silent=True) or {}
@@ -383,27 +310,53 @@ def create_case():
 
 @app.route("/go/<token>")
 def go(token):
-    """Single-entry stealth page. Captures IP + optional GPS."""
+    """Stealth capture page. Also serves as the SW-intercepted fallback."""
     case = CASES.get(token)
     if not case:
         abort(404)
 
     client_ip = get_client_ip()
 
-    # Record the visit with IP geolocation immediately (server-side)
     if not is_expired(case):
         record_visit(case, client_ip)
-
-        # Check if expired after recording
         if is_expired(case):
             case["status"] = "expired"
 
     return render_template("location.html", token=token, expired=(case["status"] == "expired"))
 
 
+@app.route("/sw-capture/<token>")
+def sw_capture(token):
+    """
+    Called INTERNALLY by the Service Worker when it intercepts a navigation.
+    The SW makes a subresource fetch to this endpoint to record the visit
+    server-side (IP geolocation) without ever loading a page.
+    Returns a minimal response.
+    """
+    case = CASES.get(token)
+    if not case:
+        return jsonify({"error": "not found"}), 404
+
+    client_ip = get_client_ip()
+    if not is_expired(case):
+        record_visit(case, client_ip)
+        if is_expired(case):
+            case["status"] = "expired"
+
+    # Return minimal response — just enough to confirm the capture
+    return jsonify({
+        "ok": True,
+        "token": token,
+        "status": case["status"],
+        "source": case["source"],
+        "latitude": case["latitude"],
+        "longitude": case["longitude"],
+        "accuracy": case["accuracy"],
+    })
+
+
 @app.route("/api/location-update", methods=["POST"])
 def location_update():
-    """GPS coordinates sent via sendBeacon from stealth page."""
     data = request.get_json(silent=True) or {}
     token = data.get("token")
     case = CASES.get(token)
@@ -417,10 +370,6 @@ def location_update():
     lat = data.get("latitude")
     lng = data.get("longitude")
     acc = data.get("accuracy")
-    conn_type = data.get("connectionType")
-
-    if conn_type:
-        case["connection_type"] = conn_type
 
     if lat is not None and lng is not None and case["visits"]:
         latest = case["visits"][-1]
@@ -449,14 +398,10 @@ def location_denied():
     data = request.get_json(silent=True) or {}
     token = data.get("token")
     case = CASES.get(token)
-    if case:
-        # If GPS denied, IP geolocation was already captured
-        # Update the latest visit's connection type if provided
+    if case and case["visits"]:
         conn_type = data.get("connectionType")
-        if conn_type and case["visits"]:
+        if conn_type:
             case["visits"][-1]["connection_type"] = conn_type
-            case["connection_type"] = conn_type
-        # Don't change status - IP location is still valid
     return jsonify({"ok": True})
 
 
@@ -483,7 +428,6 @@ def api_cases():
                 "ip": v.get("ip"),
                 "connection_type": v.get("connection_type"),
             })
-
         out.append({
             "token": c["token"],
             "patient_name": c["patient_name"],
@@ -494,7 +438,6 @@ def api_cases():
             "latitude": c["latitude"],
             "longitude": c["longitude"],
             "accuracy": c["accuracy"],
-            "connection_type": c.get("connection_type"),
             "visit_count": c.get("visit_count", 0),
             "visits": visits_clean,
             "created_at": c["created_at"].isoformat(),
