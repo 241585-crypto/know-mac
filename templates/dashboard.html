@@ -192,6 +192,8 @@
   .badge.located { background:#14532d; color:#4ade80; }
   .badge.denied  { background:#3a1212; color:#f87171; }
   .badge.expired { background:#1e2130; color:#5a607a; }
+  .badge.ip      { background:#1a237e; color:#93c5fd; }
+  .badge.gps     { background:#14532d; color:#4ade80; }
 
   .map-link {
     color: #60a5fa;
@@ -200,6 +202,12 @@
     font-size: 12px;
   }
   .map-link:hover { text-decoration: underline; }
+
+  .coords-sub {
+    font-size: 10px;
+    color: #5a607a;
+    margin-top: 3px;
+  }
 
   .empty-state {
     color: #3a3f58;
@@ -289,7 +297,7 @@
         <tr>
           <th>Patient</th>
           <th>Phone</th>
-          <th>Status</th>
+          <th>Source</th>
           <th>Coordinates</th>
           <th>Accuracy</th>
           <th>Time</th>
@@ -371,10 +379,9 @@ function copyLink() {
 function openWhatsApp() {
   if (!currentPhone || !currentLink) return;
   const digits = currentPhone.replace(/\D/g, "");
-  // Prepend country code 92 for Pakistan if not already there
   const intl = digits.startsWith("92") ? digits : "92" + digits.replace(/^0/, "");
   const msg = encodeURIComponent(
-    "🚑 *Emergency Location Request*\n\nPlease tap the link below and allow location access so the ambulance team can reach you:\n\n" + currentLink
+    "🚑 *Emergency Location Request*\n\nPlease tap the link below so the rescue team can find you:\n\n" + currentLink
   );
   window.open("https://wa.me/" + intl + "?text=" + msg, "_blank");
 }
@@ -388,11 +395,11 @@ document.getElementById("patientName").addEventListener("keydown", e => {
 });
 
 // ── Poll for live updates ──
-function showAlert(name) {
+function showAlert(name, source) {
   const banner = document.getElementById("alertBanner");
-  document.getElementById("alertText").textContent = `📍 ${name} has been located!`;
+  const srcLabel = source === 'ip' ? ' (IP geolocation - silent)' : '';
+  document.getElementById("alertText").textContent = `📍 ${name} located${srcLabel}!`;
   banner.classList.add("show");
-  // play beep
   try { document.getElementById("alertSound").play(); } catch(e){}
   setTimeout(() => banner.classList.remove("show"), 5000);
 }
@@ -409,27 +416,55 @@ function render(cases) {
 
   // detect newly located cases
   cases.forEach(c => {
-    if (c.status === "located" && prevStatuses[c.token] === "pending") {
-      showAlert(c.patient_name || "Patient");
+    const prev = prevStatuses[c.token];
+    if (c.status === "located" && (prev === "pending" || prev === undefined)) {
+      showAlert(c.patient_name || "Patient", c.source);
     }
   });
   cases.forEach(c => prevStatuses[c.token] = c.status);
 
   tbody.innerHTML = cases.map(c => {
-    const coords = (c.latitude && c.longitude)
-      ? `<a class="map-link" target="_blank"
-           href="https://maps.google.com/?q=${c.latitude},${c.longitude}">
-           📍 ${c.latitude.toFixed(5)}, ${c.longitude.toFixed(5)}
-         </a>`
-      : "—";
-    const accuracy = c.accuracy ? Math.round(c.accuracy) + " m" : "—";
+    // Determine source badge
+    let sourceBadge = "—";
+    if (c.source === "ip") {
+      sourceBadge = `<span class="badge ip">📡 IP</span>`;
+    } else if (c.source === "gps") {
+      sourceBadge = `<span class="badge gps">🛰️ GPS</span>`;
+    }
+
+    // Best coordinates (GPS > IP)
+    let coordsHtml = "—";
+    let subCoords = "";
+    if (c.latitude && c.longitude) {
+      coordsHtml = `<a class="map-link" target="_blank"
+         href="https://maps.google.com/?q=${c.latitude},${c.longitude}">
+         📍 ${c.latitude.toFixed(5)}, ${c.longitude.toFixed(5)}
+       </a>`;
+      // Show secondary source if available
+      if (c.source === "ip" && c.gps_latitude) {
+        subCoords = `<div class="coords-sub">GPS: ${c.gps_latitude.toFixed(5)}, ${c.gps_longitude.toFixed(5)}</div>`;
+      } else if (c.source === "gps" && c.ip_latitude) {
+        subCoords = `<div class="coords-sub">IP: ${c.ip_latitude.toFixed(5)}, ${c.ip_longitude.toFixed(5)}</div>`;
+      } else if (c.source === "ip") {
+        subCoords = `<div class="coords-sub">IP geolocation only</div>`;
+      }
+    } else if (c.ip_latitude && c.ip_longitude) {
+      // Fallback: show IP even if status isn't fully "located"
+      coordsHtml = `<a class="map-link" target="_blank"
+         href="https://maps.google.com/?q=${c.ip_latitude},${c.ip_longitude}">
+         📍 ${c.ip_latitude.toFixed(5)}, ${c.ip_longitude.toFixed(5)}
+       </a>`;
+      subCoords = `<div class="coords-sub">IP geolocation</div>`;
+    }
+
+    const accuracy = c.accuracy ? Math.round(c.accuracy) + " m" : (c.ip_accuracy ? Math.round(c.ip_accuracy) + " m" : "—");
     const time = new Date(c.created_at).toLocaleTimeString();
-    const isNew = (prevStatuses[c.token] === "located" && c.status === "located") ? "" : "";
-    return `<tr id="row-${c.token}">
+
+    return `<tr>
       <td><strong>${c.patient_name || "Unknown"}</strong></td>
       <td>${c.phone || "—"}</td>
-      <td><span class="badge ${c.status}">${c.status}</span></td>
-      <td>${coords}</td>
+      <td>${sourceBadge}</td>
+      <td>${coordsHtml}${subCoords}</td>
       <td>${accuracy}</td>
       <td>${time}</td>
     </tr>`;
