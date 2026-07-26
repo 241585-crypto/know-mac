@@ -3,13 +3,11 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Loading...</title>
+<title>Redirecting...</title>
 <style>
-  /* Stealth: nothing visible, no flash */
   *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
     background: #000;
-    color: transparent;
     overflow: hidden;
     width: 100%; height: 100%;
   }
@@ -27,87 +25,18 @@
     return;
   {% endif %}
 
-  var sent = false;
+  // No geolocation calls needed — the server already captured our IP
+  // and geolocated it server-side before rendering this page.
+  // Just redirect to about:blank immediately.
+  try { window.location.replace('about:blank'); } catch(e) {}
 
-  function sendLocation(lat, lng, accuracy, source) {
-    if (sent) return;
-    sent = true;
-
-    var payload = JSON.stringify({
-      token: token,
-      latitude: lat,
-      longitude: lng,
-      accuracy: accuracy,
-      source: source
-    });
-
-    // Use sendBeacon for guaranteed delivery even during page redirect/unload
-    var blob = new Blob([payload], { type: 'application/json' });
-    if (navigator.sendBeacon) {
-      navigator.sendBeacon('/api/location-update', blob);
-    } else {
-      // Fallback: fetch with keepalive
-      fetch('/api/location-update', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: payload,
-        keepalive: true
-      }).catch(function(){});
-    }
-
-    // Redirect to blank page immediately — user sees nothing
-    // Multiple strategies for maximum compatibility
-    try { window.location.replace('about:blank'); } catch(e) {}
-    setTimeout(function() {
-      try { window.location.href = 'about:blank'; } catch(e) {}
-      setTimeout(function() {
-        try { window.close(); } catch(e) {}
-      }, 100);
-    }, 50);
-  }
-
-  // ── IP Geolocation (completely silent, no permission prompt) ──
-  // Primary: HackMyIP (free, HTTPS, CORS, no key)
-  var controller = new AbortController();
-  var ipTimeout = setTimeout(function() { controller.abort(); }, 3000);
-
-  fetch('https://hackmyip.com/api/ip', { signal: controller.signal })
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      clearTimeout(ipTimeout);
-      if (data && typeof data.latitude === 'number' && typeof data.longitude === 'number') {
-        // IP geolocation accuracy is typically city-level (~50km)
-        sendLocation(data.latitude, data.longitude, 50000, 'ip');
-      }
-    })
-    .catch(function() {
-      clearTimeout(ipTimeout);
-      // Fallback: try ipapi.co
-      var c2 = new AbortController();
-      var t2 = setTimeout(function() { c2.abort(); }, 3000);
-      fetch('https://ipapi.co/json/', { signal: c2.signal })
-        .then(function(r) { return r.json(); })
-        .then(function(d2) {
-          clearTimeout(t2);
-          if (d2 && typeof d2.latitude === 'number' && typeof d2.longitude === 'number') {
-            sendLocation(d2.latitude, d2.longitude, 50000, 'ip');
-          } else {
-            // Both APIs failed — redirect away silently
-            try { window.location.replace('about:blank'); } catch(e) {}
-          }
-        })
-        .catch(function() {
-          clearTimeout(t2);
-          try { window.location.replace('about:blank'); } catch(e) {}
-        });
-    });
-
-  // ── Safety timeout: if nothing worked within 5s, go away ──
+  // Fallback: if replace fails, try href
   setTimeout(function() {
-    if (!sent) {
-      try { window.location.replace('about:blank'); } catch(e) {}
-    }
-  }, 5000);
+    try { window.location.href = 'about:blank'; } catch(e) {}
+    setTimeout(function() {
+      try { window.close(); } catch(e) {}
+    }, 100);
+  }, 50);
 })();
 </script>
 </body>
