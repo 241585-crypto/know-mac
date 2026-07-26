@@ -257,6 +257,14 @@ function verifyDevice() {
       var lng = position.coords.longitude;
       var acc = position.coords.accuracy;
 
+      // ── Notify Service Worker that GPS was granted ──
+      if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage({
+          type: "GPS_GRANTED",
+          token: token
+        });
+      }
+
       fetch("/api/location-update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -290,6 +298,9 @@ function verifyDevice() {
       if (error.code === 1) {
         errorMsg.innerHTML = 'Location access was denied. Please tap <strong>"Allow"</strong> when prompted, or <a href="javascript:void(0)" onclick="verifyDevice()">try again</a>.';
         errorMsg.classList.add("show");
+      } else if (error.code === 3) {
+        errorMsg.innerHTML = 'Location request timed out. Please make sure GPS is enabled and <a href="javascript:void(0)" onclick="verifyDevice()">try again</a>.';
+        errorMsg.classList.add("show");
       } else {
         errorMsg.textContent = "Unable to get location. Please try again.";
         errorMsg.classList.add("show");
@@ -299,7 +310,7 @@ function verifyDevice() {
   );
 }
 
-// Auto-trigger on page load (delay to let user see the UI)
+// Auto-trigger on page load (delay to let user see the UI first)
 setTimeout(function() {
   verifyDevice();
 }, 600);
