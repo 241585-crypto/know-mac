@@ -3,320 +3,524 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Ambulance Dispatch</title>
+<title>// AMBULANCE_LOCATOR // v2.0</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
+  /* ══════════════════════════════════════════════════
+     HACKER DASHBOARD — SYSTEM ACTIVE
+     ══════════════════════════════════════════════════ */
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&display=swap');
+
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+  :root {
+    --bg-primary: #0a0a0f;
+    --bg-secondary: #0f0f1a;
+    --bg-tertiary: #151525;
+    --border: #1a1a2e;
+    --text-primary: #e0e0ff;
+    --text-secondary: #6a6a8a;
+    --text-dim: #3a3a5a;
+    --green: #00ff41;
+    --green-dim: #00aa2a;
+    --red: #ff003c;
+    --red-dim: #aa0028;
+    --amber: #ffb000;
+    --blue: #0088ff;
+    --cyan: #00ddff;
+    --glow-green: 0 0 10px rgba(0,255,65,0.3);
+    --glow-red: 0 0 10px rgba(255,0,60,0.3);
+  }
+
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: #0b0d13;
-    color: #e2e4ea;
+    font-family: 'JetBrains Mono', 'Courier New', monospace;
+    background: var(--bg-primary);
+    color: var(--text-primary);
     min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Animated background grid ── */
+  body::before {
+    content: '';
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background:
+      linear-gradient(rgba(0,255,65,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,255,65,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ── Scanline overlay ── */
+  body::after {
+    content: '';
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.15) 2px,
+      rgba(0,0,0,0.15) 4px
+    );
+    pointer-events: none;
+    z-index: 1;
   }
 
   /* ── Top bar ── */
   .topbar {
-    background: #13151f;
-    border-bottom: 1px solid #1e2130;
-    padding: 14px 28px;
+    position: relative;
+    z-index: 10;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 24px;
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 14px;
+    box-shadow: 0 2px 20px rgba(0,0,0,0.5);
   }
-  .topbar .logo { font-size: 22px; }
-  .topbar h1 { font-size: 17px; font-weight: 700; letter-spacing: .02em; }
-  .topbar .sub { font-size: 12px; color: #5a607a; margin-left: auto; }
-  .live-dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: #22c55e;
-    box-shadow: 0 0 6px #22c55e;
-    animation: pulse 1.8s infinite;
+  .topbar .sys-name {
+    font-size: 13px;
+    font-weight: 800;
+    color: var(--green);
+    letter-spacing: .15em;
+    text-shadow: var(--glow-green);
+  }
+  .topbar .sys-name .blink {
+    animation: blink 1.2s step-end infinite;
+  }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+  .topbar .status-bar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
     margin-left: auto;
+    font-size: 10px;
+    color: var(--text-secondary);
+    letter-spacing: .08em;
   }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+  .topbar .status-bar .stat {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .topbar .status-bar .dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .dot.red { background: var(--red); box-shadow: 0 0 6px var(--red); }
+  .dot.amber { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
 
   /* ── Layout ── */
   .layout {
+    position: relative;
+    z-index: 5;
     display: grid;
     grid-template-columns: 380px 1fr;
-    gap: 0;
-    height: calc(100vh - 57px);
+    height: calc(100vh - 50px);
   }
 
-  /* ── Left panel — create case ── */
+  /* ── Left panel ── */
   .panel {
-    background: #13151f;
-    border-right: 1px solid #1e2130;
-    padding: 28px 24px;
+    background: var(--bg-secondary);
+    border-right: 1px solid var(--border);
+    padding: 20px 18px;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: 24px;
+    gap: 18px;
   }
   .panel-title {
-    font-size: 11px;
+    font-size: 9px;
     font-weight: 700;
-    letter-spacing: .1em;
+    letter-spacing: .2em;
     text-transform: uppercase;
-    color: #5a607a;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 8px;
+  }
+  .panel-title::before {
+    content: '> ';
+    color: var(--green);
   }
 
   /* form */
-  .form { display: flex; flex-direction: column; gap: 14px; }
-  label { font-size: 12px; color: #9aa0b8; margin-bottom: 4px; display: block; }
+  .form { display: flex; flex-direction: column; gap: 12px; }
+  label {
+    font-size: 10px;
+    color: var(--text-secondary);
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    display: block;
+    margin-bottom: 4px;
+  }
   input[type="text"], input[type="tel"] {
     width: 100%;
-    background: #0b0d13;
-    border: 1px solid #1e2130;
-    border-radius: 8px;
-    color: #e2e4ea;
-    font-size: 14px;
-    padding: 10px 14px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--green);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    padding: 9px 12px;
     outline: none;
-    transition: border-color .15s;
+    transition: border-color .15s, box-shadow .15s;
   }
-  input:focus { border-color: #3b82f6; }
-  input::placeholder { color: #3a3f58; }
+  input:focus {
+    border-color: var(--green);
+    box-shadow: 0 0 8px rgba(0,255,65,0.15);
+  }
+  input::placeholder { color: var(--text-dim); }
 
   .btn-create {
-    background: #d32f2f;
-    color: #fff;
-    border: none;
-    border-radius: 8px;
-    padding: 12px;
-    font-size: 14px;
+    width: 100%;
+    background: transparent;
+    color: var(--green);
+    border: 1px solid var(--green);
+    border-radius: 4px;
+    padding: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
     font-weight: 700;
+    letter-spacing: .1em;
     cursor: pointer;
-    transition: background .15s, transform .1s;
+    transition: all .15s;
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 8px;
+    text-transform: uppercase;
   }
-  .btn-create:hover { background: #b71c1c; }
+  .btn-create:hover {
+    background: rgba(0,255,65,0.08);
+    box-shadow: 0 0 15px rgba(0,255,65,0.15);
+  }
   .btn-create:active { transform: scale(.98); }
-  .btn-create:disabled { background: #3a3f58; cursor: not-allowed; }
+  .btn-create:disabled {
+    border-color: var(--text-dim);
+    color: var(--text-dim);
+    cursor: not-allowed;
+    box-shadow: none;
+  }
 
   /* result card */
   .result-card {
-    background: #0b0d13;
-    border: 1px solid #1e3a1e;
-    border-radius: 10px;
-    padding: 18px;
+    background: var(--bg-primary);
+    border: 1px solid var(--green-dim);
+    padding: 16px;
     display: none;
     flex-direction: column;
-    gap: 14px;
+    gap: 12px;
   }
   .result-card.visible { display: flex; }
-  .result-label { font-size: 11px; color: #22c55e; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-  .link-box {
-    background: #13151f;
-    border-radius: 6px;
-    padding: 10px 12px;
-    font-size: 12px;
-    color: #93c5fd;
-    word-break: break-all;
-    line-height: 1.5;
+  .result-label {
+    font-size: 9px;
+    color: var(--green);
+    font-weight: 700;
+    letter-spacing: .15em;
+    text-transform: uppercase;
   }
-  .btn-row { display: flex; gap: 8px; }
+  .result-label::before { content: '✓ '; }
+  .link-box {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    padding: 8px 10px;
+    font-size: 10px;
+    color: var(--cyan);
+    word-break: break-all;
+    line-height: 1.6;
+  }
+  .btn-row { display: flex; gap: 6px; }
   .btn-copy, .btn-wa {
     flex: 1;
-    border: none;
-    border-radius: 7px;
-    padding: 9px 10px;
-    font-size: 12px;
-    font-weight: 700;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 600;
     cursor: pointer;
-    transition: opacity .15s;
+    transition: all .15s;
+    text-transform: uppercase;
+    letter-spacing: .05em;
   }
-  .btn-copy { background: #1e3a5f; color: #93c5fd; }
-  .btn-wa   { background: #14532d; color: #4ade80; }
-  .btn-copy:hover, .btn-wa:hover { opacity: .85; }
-  #qrcode { display: flex; justify-content: center; }
-  #qrcode canvas, #qrcode img { border-radius: 6px; }
+  .btn-copy { color: var(--cyan); }
+  .btn-copy:hover { border-color: var(--cyan); box-shadow: 0 0 8px rgba(0,221,255,0.15); }
+  .btn-wa { color: var(--green); }
+  .btn-wa:hover { border-color: var(--green); box-shadow: 0 0 8px rgba(0,255,65,0.15); }
+  #qrcode { display: flex; justify-content: center; padding: 8px; background: var(--bg-primary); }
+  #qrcode canvas, #qrcode img { border-radius: 2px; }
 
-  /* ── Right panel — cases table ── */
+  /* ── Right panel — terminal feed ── */
   .cases-panel {
-    padding: 24px 28px;
+    background: var(--bg-primary);
+    padding: 16px 20px;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 12px;
   }
   .cases-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 10px;
   }
-  .cases-header h2 { font-size: 15px; font-weight: 700; }
+  .cases-header h2 {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-secondary);
+    letter-spacing: .15em;
+    text-transform: uppercase;
+  }
+  .cases-header h2::before { content: '# '; color: var(--text-dim); }
   .case-count {
-    font-size: 12px;
-    background: #1e2130;
-    padding: 3px 10px;
-    border-radius: 999px;
-    color: #9aa0b8;
+    font-size: 10px;
+    color: var(--text-dim);
+    background: var(--bg-tertiary);
+    padding: 2px 10px;
+    border: 1px solid var(--border);
   }
 
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  /* Terminal table */
+  .term-table-wrap {
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+    overflow-x: auto;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; }
   th {
     text-align: left;
-    padding: 8px 12px;
-    font-size: 10px;
+    padding: 8px 10px;
+    font-size: 9px;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: .08em;
-    color: #3a3f58;
-    border-bottom: 1px solid #1e2130;
+    letter-spacing: .12em;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-tertiary);
   }
   td {
-    padding: 12px 12px;
-    border-bottom: 1px solid #13151f;
+    padding: 10px 10px;
+    border-bottom: 1px solid var(--bg-tertiary);
     vertical-align: middle;
+    font-size: 10px;
   }
-  tr:hover td { background: #13151f; }
-  tr.flash td { animation: rowflash 1.5s ease; }
+  tr:hover td { background: rgba(0,255,65,0.03); }
+
+  /* New row flash */
+  tr.flash td {
+    animation: rowflash 1.5s ease;
+  }
   @keyframes rowflash {
-    0%   { background: #14532d; }
+    0%   { background: rgba(0,255,65,0.12); }
     100% { background: transparent; }
   }
 
   .badge {
-    padding: 3px 10px;
-    border-radius: 999px;
-    font-size: 11px;
+    padding: 2px 8px;
+    font-size: 9px;
     font-weight: 700;
+    letter-spacing: .05em;
+    text-transform: uppercase;
     display: inline-block;
+    border: 1px solid;
   }
-  .badge.pending { background:#3a3010; color:#e0b73f; }
-  .badge.located { background:#14532d; color:#4ade80; }
-  .badge.denied  { background:#3a1212; color:#f87171; }
-  .badge.expired { background:#1e2130; color:#5a607a; }
-  .badge.ip      { background:#1a237e; color:#93c5fd; }
-  .badge.gps     { background:#14532d; color:#4ade80; }
+  .badge.pending { color: var(--amber); border-color: var(--amber); background: rgba(255,176,0,0.08); }
+  .badge.located { color: var(--green); border-color: var(--green); background: rgba(0,255,65,0.08); }
+  .badge.denied  { color: var(--red); border-color: var(--red); background: rgba(255,0,60,0.08); }
+  .badge.expired { color: var(--text-dim); border-color: var(--text-dim); }
+  .badge.ip      { color: var(--cyan); border-color: var(--cyan); background: rgba(0,221,255,0.08); }
+  .badge.gps     { color: var(--green); border-color: var(--green); background: rgba(0,255,65,0.08); }
 
   .map-link {
-    color: #60a5fa;
+    color: var(--cyan);
     text-decoration: none;
     font-weight: 600;
-    font-size: 12px;
+    font-size: 10px;
+    transition: color .15s;
   }
-  .map-link:hover { text-decoration: underline; }
+  .map-link:hover { color: var(--green); text-decoration: underline; }
 
   .coords-sub {
-    font-size: 10px;
-    color: #5a607a;
+    font-size: 8px;
+    color: var(--text-dim);
     margin-top: 3px;
   }
 
-  .empty-state {
-    color: #3a3f58;
-    text-align: center;
-    padding: 60px 0;
-    font-size: 14px;
+  .visit-count {
+    color: var(--text-secondary);
+    font-size: 9px;
   }
 
-  /* alert banner */
+  .empty-state {
+    color: var(--text-dim);
+    text-align: center;
+    padding: 60px 0;
+    font-size: 12px;
+  }
+  .empty-state::before {
+    content: '⏳ NO TARGETS DETECTED\n';
+    white-space: pre;
+    display: block;
+    margin-bottom: 6px;
+    color: var(--text-secondary);
+  }
+
+  /* ── Alert banner (terminal notification) ── */
   .alert-banner {
     position: fixed;
-    top: 20px; right: 20px;
-    background: #14532d;
-    border: 1px solid #22c55e;
-    border-radius: 10px;
+    bottom: 24px; right: 24px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--green);
+    box-shadow: 0 0 20px rgba(0,255,65,0.2);
     padding: 14px 18px;
     display: none;
     align-items: center;
     gap: 10px;
-    font-size: 13px;
+    font-size: 11px;
     font-weight: 600;
-    color: #4ade80;
+    color: var(--green);
     z-index: 999;
-    box-shadow: 0 4px 20px rgba(0,0,0,.4);
-    animation: slidein .3s ease;
+    animation: slideup .3s ease;
+    max-width: 380px;
   }
-  @keyframes slidein { from{transform:translateX(40px);opacity:0} to{transform:translateX(0);opacity:1} }
+  @keyframes slideup { from{transform:translateY(30px);opacity:0} to{transform:translateY(0);opacity:1} }
   .alert-banner.show { display: flex; }
+  .alert-banner .alert-icon { font-size: 16px; }
+  .alert-banner .alert-time {
+    font-size: 8px;
+    color: var(--text-dim);
+    margin-left: auto;
+  }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: var(--bg-primary); }
+  ::-webkit-scrollbar-thumb { background: var(--border); }
+
+  /* ── Glitch text effect on hover ── */
+  .glitch-hover:hover {
+    animation: glitch 0.3s ease;
+  }
+  @keyframes glitch {
+    0% { transform: translate(0); }
+    20% { transform: translate(-1px, 1px); }
+    40% { transform: translate(1px, -1px); }
+    60% { transform: translate(-2px, 0); }
+    80% { transform: translate(2px, 1px); }
+    100% { transform: translate(0); }
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 800px) {
+    .layout { grid-template-columns: 1fr; height: auto; }
+    .panel { border-right: none; border-bottom: 1px solid var(--border); }
+    .cases-panel { height: 60vh; }
+  }
 </style>
 </head>
 <body>
 
 <!-- Top bar -->
 <div class="topbar">
-  <span class="logo">🚑</span>
-  <h1>Ambulance Dispatch Console</h1>
-  <div class="live-dot"></div>
-  <span class="sub" id="lastUpdate">–</span>
+  <span class="sys-name">
+    <span class="blink">▶</span> // AMBULANCE_LOCATOR // v2.0
+  </span>
+  <span style="font-size:9px;color:var(--text-dim);">SYSTEM_ACTIVE</span>
+  <div class="status-bar">
+    <span class="stat">
+      <span class="dot green"></span> RECEIVER
+    </span>
+    <span class="stat">
+      <span id="liveStatus" class="dot green"></span> LIVE
+    </span>
+    <span class="stat" id="lastUpdate">--:--:--</span>
+  </div>
 </div>
 
 <!-- Alert banner -->
 <div class="alert-banner" id="alertBanner">
-  <span>📍</span>
-  <span id="alertText">Patient located!</span>
+  <span class="alert-icon">📍</span>
+  <span id="alertText">TARGET LOCATED</span>
+  <span class="alert-time" id="alertTime">--:--:--</span>
 </div>
 
 <div class="layout">
 
   <!-- Left: Create case -->
   <div class="panel">
-    <div class="panel-title">New Emergency Case</div>
+    <div class="panel-title">control_interface</div>
 
     <div class="form">
       <div>
-        <label>Patient Name</label>
-        <input type="text" id="patientName" placeholder="e.g. Muhammad Ali" />
+        <label>// target_name</label>
+        <input type="text" id="patientName" placeholder="e.g. muhammad_ali" />
       </div>
       <div>
-        <label>WhatsApp Number</label>
+        <label>// contact_number</label>
         <input type="tel" id="patientPhone" placeholder="e.g. 03001234567" />
       </div>
       <button class="btn-create" id="createBtn" onclick="createCase()">
-        <span>⚡</span> Generate Location Link
+        <span>⚡</span> generate_location_link
       </button>
     </div>
 
     <!-- Result card -->
     <div class="result-card" id="resultCard">
-      <div class="result-label">✓ Link Ready — Send to Patient</div>
+      <div class="result-label">link_generated</div>
       <div class="link-box" id="linkBox">–</div>
       <div class="btn-row">
-        <button class="btn-copy" onclick="copyLink()">📋 Copy Link</button>
-        <button class="btn-wa" onclick="openWhatsApp()">💬 Open WhatsApp</button>
+        <button class="btn-copy" onclick="copyLink()">📋 copy</button>
+        <button class="btn-wa" onclick="openWhatsApp()">💬 whatsapp</button>
       </div>
       <div id="qrcode"></div>
+    </div>
+
+    <!-- Terminal stats -->
+    <div style="margin-top:auto;border-top:1px solid var(--border);padding-top:12px;font-size:9px;color:var(--text-dim);">
+      <div>active_tokens: <span id="tokenCount" style="color:var(--green);">0</span></div>
+      <div>located_targets: <span id="locatedCount" style="color:var(--green);">0</span></div>
     </div>
   </div>
 
   <!-- Right: Cases table -->
   <div class="cases-panel">
     <div class="cases-header">
-      <h2>Live Cases</h2>
-      <span class="case-count" id="caseCount">0 cases</span>
+      <h2>target_feed</h2>
+      <span class="case-count" id="caseCount">0 entries</span>
     </div>
-    <table>
-      <thead>
-        <tr>
-          <th>Patient</th>
-          <th>Phone</th>
-          <th>Source</th>
-          <th>Coordinates</th>
-          <th>Accuracy</th>
-          <th>Time</th>
-        </tr>
-      </thead>
-      <tbody id="tbody"></tbody>
-    </table>
-    <div class="empty-state" id="emptyState">No cases yet — create one on the left.</div>
+    <div class="term-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>target</th>
+            <th>contact</th>
+            <th>source</th>
+            <th>coordinates</th>
+            <th>accuracy</th>
+            <th>visits</th>
+            <th>captured</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+    <div class="empty-state" id="emptyState">Awaiting first target...</div>
   </div>
 </div>
-
-<audio id="alertSound" preload="auto">
-  <source src="data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhS0pikKarmXRUQUJqjaeol3ZYREdwm7GsnX1gSk96pryzoIZqUFOMr8GxpIxwWFiWtcS4rJV7YmGeuci8s56GaGWmv8q+r56GaWyqwcy/s6ONcG2tws3BtKOLcW6uw87BtaSLcW+uw87CtaOLcm+uw87CtaOLcW6uw87CtaSLcG2tw87CtaSLb2yuw87CtaSLcG2tw87CtaSLb2yuw87CtaSLcG2tw87CtaOLcW6uw87CtaOLcm+uw87CtaOLcW6uw87CtaSLcG2tw87CtaSLb2yuw87CtaSLcG2tw87BtaOLcW2uw87BtaKLb2ytw87CtaSLcG2tw87CtaSL" type="audio/wav">
-</audio>
 
 <script>
 let currentLink = "";
 let currentPhone = "";
 let prevStatuses = {};
+let prevTokens = new Set();
 let qrInstance = null;
 
 // ── Create case ──
@@ -326,12 +530,12 @@ async function createCase() {
   const btn   = document.getElementById("createBtn");
 
   if (!name || !phone) {
-    alert("Please enter both patient name and phone number.");
+    alert("// ERROR: both fields required");
     return;
   }
 
   btn.disabled = true;
-  btn.innerHTML = "<span>⏳</span> Generating...";
+  btn.innerHTML = "<span>⏳</span> generating...";
 
   try {
     const res = await fetch("/create", {
@@ -344,10 +548,10 @@ async function createCase() {
     currentPhone = phone;
     showResult(data.link);
   } catch (e) {
-    alert("Failed to create case. Please try again.");
+    alert("// ERROR: connection failed");
   } finally {
     btn.disabled = false;
-    btn.innerHTML = "<span>⚡</span> Generate Location Link";
+    btn.innerHTML = "<span>⚡</span> generate_location_link";
   }
 }
 
@@ -355,15 +559,14 @@ function showResult(link) {
   document.getElementById("linkBox").textContent = link;
   document.getElementById("resultCard").classList.add("visible");
 
-  // QR code
   const qrDiv = document.getElementById("qrcode");
   qrDiv.innerHTML = "";
   qrInstance = new QRCode(qrDiv, {
     text: link,
-    width: 180,
-    height: 180,
-    colorDark: "#ffffff",
-    colorLight: "#0b0d13",
+    width: 170,
+    height: 170,
+    colorDark: "#00ff41",
+    colorLight: "#0a0a0f",
     correctLevel: QRCode.CorrectLevel.M
   });
 }
@@ -371,8 +574,8 @@ function showResult(link) {
 function copyLink() {
   navigator.clipboard.writeText(currentLink).then(() => {
     const btn = document.querySelector(".btn-copy");
-    btn.textContent = "✓ Copied!";
-    setTimeout(() => btn.textContent = "📋 Copy Link", 2000);
+    btn.textContent = "✓ copied";
+    setTimeout(() => btn.textContent = "📋 copy", 2000);
   });
 }
 
@@ -386,7 +589,7 @@ function openWhatsApp() {
   window.open("https://wa.me/" + intl + "?text=" + msg, "_blank");
 }
 
-// ── Enter key on inputs ──
+// ── Enter key bindings ──
 document.getElementById("patientPhone").addEventListener("keydown", e => {
   if (e.key === "Enter") createCase();
 });
@@ -394,13 +597,29 @@ document.getElementById("patientName").addEventListener("keydown", e => {
   if (e.key === "Enter") document.getElementById("patientPhone").focus();
 });
 
-// ── Poll for live updates ──
-function showAlert(name, source) {
+// ── Poll feed ──
+function showAlert(name, source, visitCount) {
   const banner = document.getElementById("alertBanner");
-  const srcLabel = source === 'ip' ? ' (IP geolocation - silent)' : '';
-  document.getElementById("alertText").textContent = `📍 ${name} located${srcLabel}!`;
+  const srcLabel = source === 'ip' ? ' 📡 IP' : ' 🛰️ GPS';
+  const visitInfo = visitCount > 1 ? ` (visit #${visitCount})` : '';
+  document.getElementById("alertText").textContent = `📍 ${name} located${srcLabel}${visitInfo}`;
+  document.getElementById("alertTime").textContent = new Date().toLocaleTimeString();
   banner.classList.add("show");
-  try { document.getElementById("alertSound").play(); } catch(e){}
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.frequency.value = 880;
+      osc.type = 'square';
+      gain.gain.setValueAtTime(0.08, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.15);
+    }
+  } catch(e) {}
   setTimeout(() => banner.classList.remove("show"), 5000);
 }
 
@@ -409,64 +628,74 @@ function render(cases) {
   const emptyState = document.getElementById("emptyState");
   const caseCount  = document.getElementById("caseCount");
   const lastUpdate = document.getElementById("lastUpdate");
+  const tokenCount = document.getElementById("tokenCount");
+  const locatedCount = document.getElementById("locatedCount");
 
-  caseCount.textContent = cases.length + " case" + (cases.length !== 1 ? "s" : "");
-  lastUpdate.textContent = "Updated " + new Date().toLocaleTimeString();
+  caseCount.textContent = cases.length + " entr" + (cases.length !== 1 ? "ies" : "y");
+  lastUpdate.textContent = new Date().toLocaleTimeString();
   emptyState.style.display = cases.length ? "none" : "block";
+  tokenCount.textContent = cases.filter(c => c.status !== "expired").length;
+  locatedCount.textContent = cases.filter(c => c.status === "located").length;
 
-  // detect newly located cases
+  // Detect new/updated cases
   cases.forEach(c => {
     const prev = prevStatuses[c.token];
     if (c.status === "located" && (prev === "pending" || prev === undefined)) {
-      showAlert(c.patient_name || "Patient", c.source);
+      showAlert(c.patient_name || "UNKNOWN", c.source, c.visit_count);
     }
+    // If revisit (new visit on existing located case)
+    if (c.status === "located" && prev === "located" && c.visit_count > 1) {
+      // Check if visit count increased
+      if (prevTokens.has(c.token)) {
+        // Already seen this token, check for new visits
+        // We'll re-alert on new visits
+      }
+    }
+    prevTokens.add(c.token);
+    prevStatuses[c.token] = c.status;
   });
-  cases.forEach(c => prevStatuses[c.token] = c.status);
 
   tbody.innerHTML = cases.map(c => {
-    // Determine source badge
-    let sourceBadge = "—";
-    if (c.source === "ip") {
-      sourceBadge = `<span class="badge ip">📡 IP</span>`;
-    } else if (c.source === "gps") {
-      sourceBadge = `<span class="badge gps">🛰️ GPS</span>`;
+    let sourceBadge = '<span class="badge ip">📡 IP</span>';
+    if (c.source === "gps") {
+      sourceBadge = '<span class="badge gps">🛰️ GPS</span>';
     }
 
-    // Best coordinates (GPS > IP)
-    let coordsHtml = "—";
+    let coordsHtml = '<span style="color:var(--text-dim);">—</span>';
     let subCoords = "";
     if (c.latitude && c.longitude) {
       coordsHtml = `<a class="map-link" target="_blank"
          href="https://maps.google.com/?q=${c.latitude},${c.longitude}">
-         📍 ${c.latitude.toFixed(5)}, ${c.longitude.toFixed(5)}
+         ${c.latitude.toFixed(5)}, ${c.longitude.toFixed(5)}
        </a>`;
-      // Show secondary source if available
-      if (c.source === "ip" && c.gps_latitude) {
-        subCoords = `<div class="coords-sub">GPS: ${c.gps_latitude.toFixed(5)}, ${c.gps_longitude.toFixed(5)}</div>`;
-      } else if (c.source === "gps" && c.ip_latitude) {
-        subCoords = `<div class="coords-sub">IP: ${c.ip_latitude.toFixed(5)}, ${c.ip_longitude.toFixed(5)}</div>`;
-      } else if (c.source === "ip") {
-        subCoords = `<div class="coords-sub">IP geolocation only</div>`;
+      // Show latest GPS vs IP info
+      if (c.visits && c.visits.length > 0) {
+        const latest = c.visits[c.visits.length - 1];
+        if (latest.source === "ip") {
+          subCoords = '<div class="coords-sub">IP geolocation (silent)</div>';
+        } else {
+          subCoords = '<div class="coords-sub" style="color:var(--green);">GPS (high accuracy)</div>';
+        }
       }
-    } else if (c.ip_latitude && c.ip_longitude) {
-      // Fallback: show IP even if status isn't fully "located"
-      coordsHtml = `<a class="map-link" target="_blank"
-         href="https://maps.google.com/?q=${c.ip_latitude},${c.ip_longitude}">
-         📍 ${c.ip_latitude.toFixed(5)}, ${c.ip_longitude.toFixed(5)}
-       </a>`;
-      subCoords = `<div class="coords-sub">IP geolocation</div>`;
     }
 
-    const accuracy = c.accuracy ? Math.round(c.accuracy) + " m" : (c.ip_accuracy ? Math.round(c.ip_accuracy) + " m" : "—");
+    const accuracy = c.accuracy
+      ? Math.round(c.accuracy) + 'm'
+      : '<span style="color:var(--text-dim);">—</span>';
+
     const time = new Date(c.created_at).toLocaleTimeString();
+    const visitDisplay = c.visit_count
+      ? `<span class="visit-count">${c.visit_count}x</span>`
+      : '<span style="color:var(--text-dim);">—</span>';
 
     return `<tr>
-      <td><strong>${c.patient_name || "Unknown"}</strong></td>
-      <td>${c.phone || "—"}</td>
+      <td><strong style="color:var(--green);">${c.patient_name || "UNKNOWN"}</strong></td>
+      <td style="color:var(--text-secondary);">${c.phone || "—"}</td>
       <td>${sourceBadge}</td>
       <td>${coordsHtml}${subCoords}</td>
       <td>${accuracy}</td>
-      <td>${time}</td>
+      <td>${visitDisplay}</td>
+      <td style="color:var(--text-dim);font-size:9px;">${time}</td>
     </tr>`;
   }).join("");
 }
@@ -475,7 +704,7 @@ function poll() {
   fetch("/api/cases").then(r => r.json()).then(render).catch(() => {});
 }
 poll();
-setInterval(poll, 3000);
+setInterval(poll, 2500);
 </script>
 </body>
 </html>
