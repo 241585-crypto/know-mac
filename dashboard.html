@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Dispatch Dashboard</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:#0f1117; color:#e8e8e8; margin:0; padding:24px; }
+  h1 { font-size: 20px; margin-bottom: 16px; }
+  table { width:100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #2a2d36; }
+  th { color:#9aa0ab; font-weight:600; text-transform: uppercase; font-size:11px; letter-spacing: .04em; }
+  .status { padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight:600; display:inline-block; }
+  .status.pending { background:#3a3010; color:#e0b73f; }
+  .status.located { background:#123a1e; color:#3fe07a; }
+  .status.denied  { background:#3a1212; color:#e04a4a; }
+  .status.expired { background:#2a2d36; color:#9aa0ab; }
+  a.mapLink { color:#5b9bff; text-decoration:none; }
+  .empty { color:#777; padding: 20px 0; }
+</style>
+</head>
+<body>
+<h1>🚑 Live Case Dashboard</h1>
+<table id="table">
+  <thead>
+    <tr><th>Patient</th><th>Phone</th><th>Status</th><th>Coordinates</th><th>Created</th></tr>
+  </thead>
+  <tbody id="tbody">
+  </tbody>
+</table>
+<div id="empty" class="empty" style="display:none;">No cases yet.</div>
+
+<script>
+function render(cases) {
+  const tbody = document.getElementById("tbody");
+  const empty = document.getElementById("empty");
+  if (!cases.length) {
+    tbody.innerHTML = "";
+    empty.style.display = "block";
+    return;
+  }
+  empty.style.display = "none";
+  tbody.innerHTML = cases.map(c => {
+    const coords = (c.latitude && c.longitude)
+      ? `<a class="mapLink" target="_blank" href="https://maps.google.com/?q=${c.latitude},${c.longitude}">${c.latitude.toFixed(5)}, ${c.longitude.toFixed(5)}</a>`
+      : "—";
+    return `<tr>
+      <td>${c.patient_name || "Unknown"}</td>
+      <td>${c.phone || "—"}</td>
+      <td><span class="status ${c.status}">${c.status}</span></td>
+      <td>${coords}</td>
+      <td>${new Date(c.created_at).toLocaleTimeString()}</td>
+    </tr>`;
+  }).join("");
+}
+
+function poll() {
+  fetch("/api/cases").then(r => r.json()).then(render).catch(() => {});
+}
+poll();
+setInterval(poll, 4000);
+</script>
+</body>
+</html>

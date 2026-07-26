@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Emergency Location Share</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f4f6f8;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 20px;
+  }
+  .card {
+    background: #fff;
+    border-radius: 16px;
+    padding: 32px 24px;
+    max-width: 400px;
+    width: 100%;
+    text-align: center;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+  }
+  .icon {
+    font-size: 48px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 20px;
+    margin: 0 0 8px;
+    color: #1a1a1a;
+  }
+  p {
+    color: #555;
+    font-size: 15px;
+    line-height: 1.5;
+    margin: 0 0 24px;
+  }
+  button {
+    background: #d32f2f;
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    padding: 14px 24px;
+    font-size: 16px;
+    font-weight: 600;
+    width: 100%;
+    cursor: pointer;
+  }
+  button:disabled { background: #aaa; }
+  .status { margin-top: 18px; font-size: 14px; }
+  .status.ok { color: #2e7d32; }
+  .status.err { color: #c62828; }
+</style>
+</head>
+<body>
+  <div class="card">
+    {% if expired %}
+      <div class="icon">⏰</div>
+      <h1>This link has expired</h1>
+      <p>For your safety, this location link is only valid for a short time. Please contact emergency services again for a new link.</p>
+    {% else %}
+      <div class="icon">🚑</div>
+      <h1>Share Your Location</h1>
+      <p>Tap the button below and allow location access so the ambulance team can find you as quickly as possible.</p>
+      <button id="shareBtn" onclick="shareLocation()">Allow Location Access</button>
+      <div id="status" class="status"></div>
+    {% endif %}
+  </div>
+
+<script>
+const token = "{{ token }}";
+
+function shareLocation() {
+  const btn = document.getElementById("shareBtn");
+  const status = document.getElementById("status");
+
+  if (!("geolocation" in navigator)) {
+    status.className = "status err";
+    status.textContent = "Your browser doesn't support location sharing. Please call the dispatcher directly.";
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = "Getting your location...";
+
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      const payload = {
+        token: token,
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        accuracy: position.coords.accuracy
+      };
+      fetch("/api/location-update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      })
+        .then((r) => r.json())
+        .then(() => {
+          btn.style.display = "none";
+          status.className = "status ok";
+          status.textContent = "Location sent. Help is on the way.";
+        })
+        .catch(() => {
+          status.className = "status err";
+          status.textContent = "Could not send location. Please call the dispatcher.";
+          btn.disabled = false;
+          btn.textContent = "Try Again";
+        });
+    },
+    (error) => {
+      fetch("/api/location-denied", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: token })
+      });
+      status.className = "status err";
+      status.textContent = "Location access was denied or unavailable. Please call the dispatcher directly with your address.";
+      btn.disabled = false;
+      btn.textContent = "Try Again";
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+  );
+}
+</script>
+</body>
+</html>
