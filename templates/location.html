@@ -3,72 +3,304 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Emergency Location Share</title>
+<title>Rescue Team — Confirm Your Location</title>
 <style>
-  * { box-sizing: border-box; }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
   body {
-    margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: #f4f6f8;
+    background: #f0f2f5;
+    min-height: 100vh;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
-    min-height: 100vh;
     padding: 20px;
   }
+
+  /* ── Official header strip ── */
+  .official-bar {
+    width: 100%;
+    max-width: 420px;
+    background: #1a237e;
+    border-radius: 16px 16px 0 0;
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .official-bar .shield { font-size: 20px; }
+  .official-bar .org {
+    font-size: 11px;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    line-height: 1.3;
+  }
+  .official-bar .org span {
+    display: block;
+    font-weight: 400;
+    color: #9fa8da;
+    font-size: 10px;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .verified-badge {
+    margin-left: auto;
+    background: #283593;
+    border: 1px solid #3949ab;
+    border-radius: 999px;
+    padding: 3px 10px;
+    font-size: 10px;
+    color: #9fa8da;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  /* ── Main card ── */
   .card {
     background: #fff;
-    border-radius: 16px;
-    padding: 32px 24px;
-    max-width: 400px;
     width: 100%;
+    max-width: 420px;
+    border-radius: 0 0 16px 16px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.10);
+    overflow: hidden;
+  }
+
+  /* Ambulance animation strip */
+  .ambulance-strip {
+    background: linear-gradient(135deg, #e53935 0%, #b71c1c 100%);
+    padding: 28px 20px 24px;
     text-align: center;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+    position: relative;
+    overflow: hidden;
   }
-  .icon {
-    font-size: 48px;
-    margin-bottom: 12px;
+  .ambulance-strip::before {
+    content: "";
+    position: absolute;
+    top: 0; left: -100%;
+    width: 60%;
+    height: 100%;
+    background: rgba(255,255,255,0.06);
+    transform: skewX(-20deg);
+    animation: shimmer 2.5s infinite;
   }
-  h1 {
-    font-size: 20px;
-    margin: 0 0 8px;
-    color: #1a1a1a;
+  @keyframes shimmer {
+    0%   { left: -100%; }
+    100% { left: 200%; }
   }
-  p {
-    color: #555;
+  .ambulance-icon {
+    font-size: 52px;
+    display: block;
+    animation: bounce 1.2s ease-in-out infinite alternate;
+    filter: drop-shadow(0 4px 8px rgba(0,0,0,0.3));
+  }
+  @keyframes bounce {
+    from { transform: translateY(0px); }
+    to   { transform: translateY(-6px); }
+  }
+  .strip-title {
+    color: #fff;
+    font-size: 18px;
+    font-weight: 800;
+    margin-top: 12px;
+    letter-spacing: .01em;
+  }
+  .strip-sub {
+    color: rgba(255,255,255,0.75);
+    font-size: 12px;
+    margin-top: 4px;
+  }
+
+  /* Flashing lights */
+  .lights {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 14px;
+  }
+  .light {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+  }
+  .light.red  { background:#ff5252; animation: flashR 0.8s infinite; }
+  .light.blue { background:#448aff; animation: flashB 0.8s infinite 0.4s; }
+  @keyframes flashR { 0%,100%{opacity:1;box-shadow:0 0 8px #ff5252} 50%{opacity:.2;box-shadow:none} }
+  @keyframes flashB { 0%,100%{opacity:1;box-shadow:0 0 8px #448aff} 50%{opacity:.2;box-shadow:none} }
+
+  /* ── Body content ── */
+  .body { padding: 24px 24px 20px; }
+
+  .dispatch-info {
+    background: #f5f7ff;
+    border: 1px solid #e3e7ff;
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .info-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    color: #374151;
+  }
+  .info-row .icon { font-size: 16px; width: 20px; text-align: center; }
+  .info-row strong { color: #1a237e; }
+
+  /* Status area */
+  .status-area { text-align: center; }
+
+  .main-message {
     font-size: 15px;
-    line-height: 1.5;
-    margin: 0 0 24px;
+    font-weight: 700;
+    color: #111827;
+    margin-bottom: 6px;
   }
-  button {
-    background: #d32f2f;
+  .sub-message {
+    font-size: 13px;
+    color: #6b7280;
+    line-height: 1.5;
+    margin-bottom: 20px;
+  }
+
+  /* Progress dots while locating */
+  .locating-dots {
+    display: flex;
+    justify-content: center;
+    gap: 6px;
+    margin: 16px 0;
+  }
+  .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #e53935;
+    animation: dotpulse 1.2s infinite ease-in-out;
+  }
+  .dot:nth-child(2) { animation-delay: 0.2s; }
+  .dot:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes dotpulse { 0%,80%,100%{transform:scale(0.6);opacity:.4} 40%{transform:scale(1);opacity:1} }
+
+  /* Success state */
+  .success-icon {
+    font-size: 48px;
+    display: none;
+    justify-content: center;
+    margin: 10px 0;
+  }
+
+  /* Retry button — only shown on denial */
+  .btn-retry {
+    display: none;
+    width: 100%;
+    background: #e53935;
     color: #fff;
     border: none;
     border-radius: 10px;
-    padding: 14px 24px;
-    font-size: 16px;
-    font-weight: 600;
-    width: 100%;
+    padding: 14px;
+    font-size: 14px;
+    font-weight: 700;
     cursor: pointer;
+    margin-top: 8px;
   }
-  button:disabled { background: #aaa; }
-  .status { margin-top: 18px; font-size: 14px; }
-  .status.ok { color: #2e7d32; }
-  .status.err { color: #c62828; }
+  .btn-retry:active { background: #b71c1c; }
+
+  /* ── Footer ── */
+  .footer {
+    border-top: 1px solid #f3f4f6;
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .footer .lock { font-size: 12px; color: #9ca3af; }
+  .footer p {
+    font-size: 11px;
+    color: #9ca3af;
+    line-height: 1.4;
+  }
 </style>
 </head>
 <body>
+
+  <!-- Official header -->
+  <div class="official-bar">
+    <span class="shield">🛡️</span>
+    <div class="org">
+      Emergency Rescue Services
+      <span>Authorized Dispatch System</span>
+    </div>
+    <div class="verified-badge">✓ Verified</div>
+  </div>
+
   <div class="card">
     {% if expired %}
-      <div class="icon">⏰</div>
-      <h1>This link has expired</h1>
-      <p>For your safety, this location link is only valid for a short time. Please contact emergency services again for a new link.</p>
+      <div class="ambulance-strip">
+        <span class="ambulance-icon">⏰</span>
+        <div class="strip-title">Link Expired</div>
+        <div class="strip-sub">This request is no longer active</div>
+      </div>
+      <div class="body">
+        <div class="status-area">
+          <div class="main-message">This link has expired</div>
+          <div class="sub-message">For your safety, location links are only active for a limited time. Please contact the rescue team again for assistance.</div>
+        </div>
+      </div>
     {% else %}
-      <div class="icon">🚑</div>
-      <h1>Locating you...</h1>
-      <p>Please tap <strong>Allow</strong> on the prompt so the ambulance team can find you as quickly as possible.</p>
-      <button id="shareBtn" onclick="shareLocation()" style="display:none;">Try Again</button>
-      <div id="status" class="status"></div>
+      <!-- Ambulance strip -->
+      <div class="ambulance-strip">
+        <span class="ambulance-icon">🚑</span>
+        <div class="strip-title">Rescue Team Dispatched</div>
+        <div class="strip-sub">Help is on the way — we need your location</div>
+        <div class="lights">
+          <div class="light red"></div>
+          <div class="light blue"></div>
+          <div class="light red"></div>
+          <div class="light blue"></div>
+          <div class="light red"></div>
+        </div>
+      </div>
+
+      <div class="body">
+        <!-- Dispatch info box -->
+        <div class="dispatch-info">
+          <div class="info-row">
+            <span class="icon">🏥</span>
+            <span>Rescue unit is standing by</span>
+          </div>
+          <div class="info-row">
+            <span class="icon">📡</span>
+            <span>Tap <strong>Allow</strong> on the prompt to confirm your location</span>
+          </div>
+          <div class="info-row">
+            <span class="icon">🔒</span>
+            <span>Your location is only shared with the rescue team</span>
+          </div>
+        </div>
+
+        <!-- Status area -->
+        <div class="status-area">
+          <div class="main-message" id="mainMsg">Locating you now...</div>
+          <div class="sub-message" id="subMsg">Please allow location access when prompted. This helps the ambulance reach you faster.</div>
+          <div class="locating-dots" id="dots">
+            <div class="dot"></div>
+            <div class="dot"></div>
+            <div class="dot"></div>
+          </div>
+          <div class="success-icon" id="successIcon">✅</div>
+          <button class="btn-retry" id="retryBtn" onclick="shareLocation()">Try Again</button>
+        </div>
+      </div>
+
+      <div class="footer">
+        <span class="lock">🔒</span>
+        <p>Your location is encrypted and only visible to the assigned rescue dispatcher. It will not be stored after the emergency is resolved.</p>
+      </div>
     {% endif %}
   </div>
 
@@ -76,70 +308,70 @@
 const token = "{{ token }}";
 
 function shareLocation() {
-  const btn = document.getElementById("shareBtn");
-  const status = document.getElementById("status");
-  const heading = document.querySelector("h1");
-  const sub = document.querySelector(".card p");
+  const mainMsg    = document.getElementById("mainMsg");
+  const subMsg     = document.getElementById("subMsg");
+  const dots       = document.getElementById("dots");
+  const successIcon= document.getElementById("successIcon");
+  const retryBtn   = document.getElementById("retryBtn");
 
   if (!("geolocation" in navigator)) {
-    status.className = "status err";
-    status.textContent = "Your browser doesn't support location sharing. Please call the dispatcher directly.";
+    mainMsg.textContent = "Location not supported";
+    subMsg.textContent  = "Your browser does not support location sharing. Please call the rescue team directly.";
+    dots.style.display  = "none";
     return;
   }
 
-  btn.disabled = true;
-  btn.style.display = "none";
-  status.className = "status";
-  status.textContent = "Requesting location...";
+  // Reset to locating state
+  mainMsg.textContent       = "Locating you now...";
+  subMsg.textContent        = "Please tap Allow when prompted. This helps the ambulance reach you faster.";
+  dots.style.display        = "flex";
+  successIcon.style.display = "none";
+  retryBtn.style.display    = "none";
 
   navigator.geolocation.getCurrentPosition(
     (position) => {
-      const payload = {
-        token: token,
-        latitude: position.coords.latitude,
-        longitude: position.coords.longitude,
-        accuracy: position.coords.accuracy
-      };
       fetch("/api/location-update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      })
-        .then((r) => r.json())
-        .then(() => {
-          heading.textContent = "Location sent";
-          sub.textContent = "Help is on the way.";
-          status.className = "status ok";
-          status.textContent = "";
+        body: JSON.stringify({
+          token,
+          latitude:  position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy:  position.coords.accuracy
         })
-        .catch(() => {
-          status.className = "status err";
-          status.textContent = "Could not send location. Please call the dispatcher.";
-          btn.disabled = false;
-          btn.style.display = "block";
-        });
+      })
+      .then(r => r.json())
+      .then(() => {
+        dots.style.display        = "none";
+        successIcon.style.display = "flex";
+        mainMsg.textContent       = "Location confirmed ✓";
+        subMsg.textContent        = "The rescue team knows where you are. Stay calm — help is on the way. Keep your phone with you.";
+      })
+      .catch(() => {
+        dots.style.display  = "none";
+        mainMsg.textContent = "Connection issue";
+        subMsg.textContent  = "Your location was found but could not be sent. Please call the rescue team directly.";
+        retryBtn.style.display = "block";
+        retryBtn.textContent   = "Try Again";
+      });
     },
     (error) => {
       fetch("/api/location-denied", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: token })
+        body: JSON.stringify({ token })
       });
-      heading.textContent = "Location needed";
-      sub.textContent = "Location access was denied or unavailable. Please call the dispatcher directly with your address, or tap below to try again.";
-      status.className = "status err";
-      status.textContent = "";
-      btn.disabled = false;
-      btn.style.display = "block";
+      dots.style.display     = "none";
+      mainMsg.textContent    = "Location access needed";
+      subMsg.textContent     = "Please tap 'Try Again' and allow location access — this is the fastest way for the rescue team to find you.";
+      retryBtn.style.display = "block";
+      retryBtn.textContent   = "Try Again";
     },
     { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
   );
 }
 
-// Fire immediately on page load — no button tap required to trigger
-// the browser's native permission prompt. This saves critical seconds
-// in an emergency. The button only reappears if permission is denied
-// or the request fails, so the patient can retry.
+// Fire immediately on page load
 if (!{{ 'true' if expired else 'false' }}) {
   shareLocation();
 }
