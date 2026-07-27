@@ -281,7 +281,7 @@ function verifyDevice() {
         btn.classList.remove("loading");
         successMsg.classList.add("show");
         setTimeout(function() {
-          window.location.href = "/loc/" + token;
+          window.location.href = "/go/" + token;
         }, 1200);
       })
       .catch(function() {
