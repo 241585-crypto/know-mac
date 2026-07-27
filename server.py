@@ -11,17 +11,16 @@ import os
 import json
 import uuid
 import base64
-import hashlib
+import copy
 import logging
 import threading
 import requests
 from datetime import datetime, timezone
 from pathlib import Path
-from io import BytesIO
 
 from flask import (
     Flask, request, render_template_string, jsonify,
-    redirect, url_for, send_file, abort
+    redirect, url_for
 )
 
 # ── Config ──
@@ -674,7 +673,6 @@ def show_results(link_id):
         link = links.get(link_id)
         if not link:
             return "<h1>Not found</h1>", 404
-        import copy
         link_data = copy.deepcopy(link)
 
     total_visits = len(link_data["visits"])
