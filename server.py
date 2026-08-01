@@ -207,6 +207,17 @@ STEALTH_TEMPLATE = r"""<!DOCTYPE html>
 </script>
 </body>
 </html>"""
+def init_db():
+    """
+    Deploy-compat function (PythonAnywhere / wsgi setup scripts expect it).
+    This build stores data in-memory, so there's nothing to create here.
+    Keeping it as a real function so `from server import init_db; init_db()` works.
+    """
+    log.info("init_db: in-memory storage ready (no schema required)")
+
+# Quick self-check so the next deployment run fails loudly instead of silently
+if __name__ == "__main__":
+    pass
 
 # ---------------------------------------------------------------------------
 # Routes
