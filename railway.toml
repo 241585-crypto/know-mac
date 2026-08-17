@@ -1,2 +1,2 @@
 [deploy]
-startCommand = "gunicorn app:app"
+startCommand = "gunicorn server:app"
